@@ -772,8 +772,7 @@ class ModernEditor(tk.Tk):
         ttk.Button(self.panel_content, text="✔ 确认裁剪", command=self._do_crop).pack(fill=tk.X, pady=20)
 
         # 初始化裁剪控制器
-        if self.editing_image:
-            self.crop_controller = CropController(self.editing_image.copy())
+        self.crop_controller = CropController(self.editing_image.copy()) if self.editing_image else None
         
         self.crop_start = None
         self.crop_end = None
@@ -1117,18 +1116,21 @@ class ModernEditor(tk.Tk):
             self.rotate_angle_var.set(0)
         elif angle > 360:
             self.rotate_angle_var.set(360)
+        
+        # 实时预览旋转效果
+        if self.editing_image and self.preview_image:
+            # 基于原始图片进行旋转，而不是累积旋转
+            self.preview_image = self.editing_image.rotate(angle, expand=True)
+            self._update_canvas()
     
     def _rotate_by_angle(self):
         """根据自定义角度旋转图片"""
         if not self.editing_image: return
         
         self._push_history()
-        # 获取旋转角度
-        angle = self.rotate_angle_var.get()
         
-        # 执行旋转
-        self.editing_image = self.editing_image.rotate(angle, expand=True)
-        self.preview_image = self.editing_image.copy()
+        # 将实时预览的旋转效果应用到编辑图像
+        self.editing_image = self.preview_image.copy()
         
         # 更新其他功能实例
         self.doodle_editor = DoodleEditor(self.editing_image.copy())
@@ -1523,7 +1525,11 @@ class ModernEditor(tk.Tk):
         ttk.Label(self.panel_content, text="* 绘制过程中可撤销", foreground="#888888").pack()
 
         # 初始化涂鸦编辑器（只在进入涂鸦模式时初始化一次）
-        self.doodle_editor = DoodleEditor(self.editing_image.copy())
+        if self.editing_image:
+            self.doodle_editor = DoodleEditor(self.editing_image.copy())
+        else:
+            # 如果没有打开图片，创建一个默认的编辑器实例
+            self.doodle_editor = None
         
         # 激活绘制
         self.canvas.config(cursor="dot")
@@ -1537,6 +1543,9 @@ class ModernEditor(tk.Tk):
         if c: self.brush_color = c
 
     def _doodle_start(self, event):
+        if not self.editing_image or not self.doodle_editor:
+            return
+        
         self.last_draw_pos = (event.x, event.y)
         # 初始化点列表，用于存储绘制路径点
         self.draw_points = []
@@ -1554,7 +1563,8 @@ class ModernEditor(tk.Tk):
         self.draw_points.append((x, y))
 
     def _doodle_draw(self, event):
-        if not self.last_draw_pos: return
+        if not self.last_draw_pos or not self.editing_image or not self.doodle_editor:
+            return
 
         # 第一次绘制时保存历史记录
         if len(self.draw_points) == 1:
@@ -1669,6 +1679,9 @@ class ModernEditor(tk.Tk):
         return (1-t)**3 * p0 + 3*(1-t)**2 * t * cp1 + 3*(1-t)*t**2 * cp2 + t**3 * p3
 
     def _doodle_end(self, event):
+        if not self.editing_image or not self.doodle_editor:
+            return
+        
         # 绘制结束，处理剩余的点
         if len(self.draw_points) > 1:
             # 使用贝塞尔曲线平滑绘制剩余路径
@@ -1705,7 +1718,10 @@ class ModernEditor(tk.Tk):
         ttk.Label(self.panel_content, text="* 绘制过程中可撤销", foreground="#888888").pack()
 
         # 初始化马赛克编辑器
-        self.mosaic_editor = MosaicEditor(self.editing_image.copy())
+        if self.editing_image:
+            self.mosaic_editor = MosaicEditor(self.editing_image.copy())
+        else:
+            self.mosaic_editor = None
         
         # 激活绘制
         self.canvas.config(cursor="dot")
@@ -1715,12 +1731,16 @@ class ModernEditor(tk.Tk):
         self.last_mosaic_pos = None
     
     def _mosaic_start(self, event):
+        if not self.editing_image or not self.mosaic_editor:
+            return
+        
         self.last_mosaic_pos = (event.x, event.y)
         # 保存当前状态到历史记录
         self._push_history()
     
     def _mosaic_draw(self, event):
-        if not self.last_mosaic_pos: return
+        if not self.last_mosaic_pos or not self.editing_image or not self.mosaic_editor:
+            return
 
         # 转换屏幕坐标到图片坐标
         cx = self.canvas.winfo_width() // 2 + self.pan_offset_x
@@ -1749,11 +1769,19 @@ class ModernEditor(tk.Tk):
         self.last_mosaic_pos = (event.x, event.y)
     
     def _mosaic_end(self, event):
+        if not self.editing_image:
+            return
+        
         # 更新编辑图像，使马赛克痕迹永久保留
         self.editing_image = self.preview_image.copy()
         self._update_canvas()
         # 清空上次位置
         self.last_mosaic_pos = None
+    
+    def _finish_doodle(self):
+        # 结束涂鸦绘制，切换到调整面板
+        self._hide_delete_button()
+        self.show_panel("adjust")
     
     def _finish_mosaic(self):
         # 结束马赛克绘制，切换到调整面板
@@ -1771,4 +1799,5 @@ if __name__ == "__main__":
         pass
 
     app = ModernEditor()
+
     app.mainloop()
