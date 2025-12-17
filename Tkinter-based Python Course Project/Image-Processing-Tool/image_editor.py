@@ -32,6 +32,8 @@ class DoodleEditor:
         self.color = color
 
     def draw_line(self, x1, y1, x2, y2):
+        """绘制平滑的线条"""
+        # 使用PIL支持的参数绘制线条
         self.draw.line((x1, y1, x2, y2), fill=self.color, width=self.size)
 
     def merge(self):
@@ -52,7 +54,8 @@ class MosaicEditor:
 
     def apply_mosaic_area(self, x, y):
         r = self.size // 2
-        box = (x - r, y - r, x + r, y + r)
+        # 将坐标转换为整数，修复TypeError
+        box = (int(x - r), int(y - r), int(x + r), int(y + r))
         # 边界检查
         box = (max(0, box[0]), max(0, box[1]), min(self.base.width, box[2]), min(self.base.height, box[3]))
         if box[0] >= box[2] or box[1] >= box[3]:
@@ -61,20 +64,40 @@ class MosaicEditor:
         region = self.base_copy.crop(box)
         
         if self.type == "pixel":
-            # 像素化马赛克
-            small = region.resize((8, 8), Image.NEAREST)
+            # 像素化马赛克：增大像素块大小，使效果更明显
+            pixel_size = max(2, min(20, self.size // 12))  # 2-20像素块，比之前更小，效果更明显
+            small = region.resize((pixel_size, pixel_size), Image.NEAREST)
             mosaic = small.resize(region.size, Image.NEAREST)
         elif self.type == "blur":
-            # 模糊马赛克
-            mosaic = region.filter(ImageFilter.GaussianBlur(radius=10))
+            # 模糊马赛克：增大模糊半径，使效果更明显
+            blur_radius = max(5, min(30, self.size // 6))  # 5-30模糊半径，比之前更大
+            mosaic = region.filter(ImageFilter.GaussianBlur(radius=blur_radius))
         elif self.type == "triangle":
-            # 三角形马赛克（简单模拟）
-            small = region.resize((8, 8), Image.NEAREST)
-            mosaic = small.resize(region.size, Image.Resampling.BICUBIC)
+            # 改进的三角形马赛克效果，增强效果
+            small_size = max(4, min(16, self.size // 15))
+            small = region.resize((small_size, small_size), Image.NEAREST)
+            mosaic = small.resize(region.size, Image.Resampling.NEAREST)
+            mosaic = mosaic.filter(ImageFilter.EDGE_ENHANCE_MORE)
             mosaic = mosaic.filter(ImageFilter.SHARPEN)
+            mosaic = mosaic.filter(ImageFilter.SHARPEN)  # 再次锐化，增强效果
+        elif self.type == "hexagon":
+            # 六边形马赛克效果，增强边缘
+            small_size = max(6, min(20, self.size // 12))
+            small = region.resize((small_size, small_size), Image.NEAREST)
+            mosaic = small.resize(region.size, Image.Resampling.LANCZOS)
+            mosaic = mosaic.filter(ImageFilter.EDGE_ENHANCE_MORE)
+            mosaic = mosaic.filter(ImageFilter.SHARPEN)
+        elif self.type == "circle":
+            # 圆形马赛克效果，增强边缘
+            small_size = max(4, min(18, self.size // 11))
+            small = region.resize((small_size, small_size), Image.BICUBIC)
+            mosaic = small.resize(region.size, Image.Resampling.BICUBIC)
+            mosaic = mosaic.filter(ImageFilter.GaussianBlur(radius=1))  # 减小模糊，保持边缘
+            mosaic = mosaic.filter(ImageFilter.EDGE_ENHANCE_MORE)
         else:
-            # 默认像素化
-            small = region.resize((8, 8), Image.NEAREST)
+            # 默认像素化，增强效果
+            pixel_size = max(2, min(20, self.size // 12))
+            small = region.resize((pixel_size, pixel_size), Image.NEAREST)
             mosaic = small.resize(region.size, Image.NEAREST)
         
         self.layer.paste(mosaic, box)
@@ -1628,18 +1651,20 @@ class ModernEditor(tk.Tk):
                 p1 = points[i+1]
                 p2 = points[i+2]
                 
-                # 计算控制点
-                cp1 = (p1[0] + (p2[0] - p0[0]) * 0.1, p1[1] + (p2[1] - p0[1]) * 0.1)
-                cp2 = (p1[0] + (p2[0] - p0[0]) * 0.1, p1[1] + (p2[1] - p0[1]) * 0.1)
+                # 计算控制点，使用与中间线段一致的张力
+                tension = 0.2
+                cp1 = (p1[0] + (p2[0] - p0[0]) * tension * 0.15, p1[1] + (p2[1] - p0[1]) * tension * 0.15)
+                cp2 = (p1[0] + (p2[0] - p0[0]) * tension * 0.15, p1[1] + (p2[1] - p0[1]) * tension * 0.15)
             elif i == len(points) - 2 and len(points) > 2:
                 # 最后一个线段，使用最后三个点计算控制点
                 p0 = points[i-1]
                 p1 = points[i]
                 p2 = points[i+1]
                 
-                # 计算控制点
-                cp1 = (p1[0] + (p2[0] - p0[0]) * 0.1, p1[1] + (p2[1] - p0[1]) * 0.1)
-                cp2 = (p1[0] + (p2[0] - p0[0]) * 0.1, p1[1] + (p2[1] - p0[1]) * 0.1)
+                # 计算控制点，使用与中间线段一致的张力
+                tension = 0.2
+                cp1 = (p1[0] + (p2[0] - p0[0]) * tension * 0.15, p1[1] + (p2[1] - p0[1]) * tension * 0.15)
+                cp2 = (p1[0] + (p2[0] - p0[0]) * tension * 0.15, p1[1] + (p2[1] - p0[1]) * tension * 0.15)
             else:
                 # 中间线段，使用前后两个点计算控制点
                 p_prev = points[i-1] if i > 0 else points[i]
@@ -1647,20 +1672,20 @@ class ModernEditor(tk.Tk):
                 p_next = points[i+1]
                 p_next_next = points[i+2] if i+2 < len(points) else points[i+1]
                 
-                # 计算控制点，使用张力参数控制平滑程度
-                tension = 0.5
-                cp1 = (p_current[0] + (p_next[0] - p_prev[0]) * tension * 0.1,
-                       p_current[1] + (p_next[1] - p_prev[1]) * tension * 0.1)
-                cp2 = (p_next[0] - (p_next_next[0] - p_current[0]) * tension * 0.1,
-                       p_next[1] - (p_next_next[1] - p_current[1]) * tension * 0.1)
+                # 计算控制点，使用调整后的张力参数使线条更线性
+                tension = 0.2  # 张力从0.5降低到0.2，使线条更线性
+                cp1 = (p_current[0] + (p_next[0] - p_prev[0]) * tension * 0.15,
+                       p_current[1] + (p_next[1] - p_prev[1]) * tension * 0.15)
+                cp2 = (p_next[0] - (p_next_next[0] - p_current[0]) * tension * 0.15,
+                       p_next[1] - (p_next_next[1] - p_current[1]) * tension * 0.15)
             
             # 使用贝塞尔曲线绘制
             self._draw_bezier(points[i], cp1, cp2, points[i+1], color, brush_size)
     
     def _draw_bezier(self, p0, cp1, cp2, p3, color, width):
         """绘制贝塞尔曲线"""
-        # 计算贝塞尔曲线上的点
-        steps = 10  # 曲线分段数
+        # 增加曲线分段数，使线条更平滑
+        steps = 20  # 曲线分段数从10增加到20
         for t in range(steps):
             t0 = t / steps
             t1 = t0 + 1 / steps
@@ -1671,7 +1696,7 @@ class ModernEditor(tk.Tk):
             x1 = self._bezier_point(p0[0], cp1[0], cp2[0], p3[0], t1)
             y1 = self._bezier_point(p0[1], cp1[1], cp2[1], p3[1], t1)
             
-            # 绘制小段直线
+            # 绘制小段直线，使用PIL支持的参数
             self.doodle_editor.draw.line((x0, y0, x1, y1), fill=color, width=width)
     
     def _bezier_point(self, p0, cp1, cp2, p3, t):
@@ -1707,6 +1732,8 @@ class ModernEditor(tk.Tk):
         ttk.Radiobutton(type_frame, text="像素化", variable=self.mosaic_type, value="pixel").pack(anchor=tk.W, pady=2)
         ttk.Radiobutton(type_frame, text="模糊", variable=self.mosaic_type, value="blur").pack(anchor=tk.W, pady=2)
         ttk.Radiobutton(type_frame, text="三角形", variable=self.mosaic_type, value="triangle").pack(anchor=tk.W, pady=2)
+        ttk.Radiobutton(type_frame, text="六边形", variable=self.mosaic_type, value="hexagon").pack(anchor=tk.W, pady=2)
+        ttk.Radiobutton(type_frame, text="圆形", variable=self.mosaic_type, value="circle").pack(anchor=tk.W, pady=2)
 
         # 马赛克大小
         ttk.Label(self.panel_content, text="马赛克大小:").pack(anchor=tk.W, pady=(10, 0))
@@ -1750,17 +1777,35 @@ class ModernEditor(tk.Tk):
         img_x1 = cx - current_w // 2
         img_y1 = cy - current_h // 2
 
-        # 计算实际图片坐标
-        x = (event.x - img_x1) / self.zoom_scale
-        y = (event.y - img_y1) / self.zoom_scale
+        # 计算当前和上次的图片坐标
+        x1 = (self.last_mosaic_pos[0] - img_x1) / self.zoom_scale
+        y1 = (self.last_mosaic_pos[1] - img_y1) / self.zoom_scale
+        x2 = (event.x - img_x1) / self.zoom_scale
+        y2 = (event.y - img_y1) / self.zoom_scale
         
         # 设置马赛克参数
         mosaic_size = int(self.mosaic_size_scale.get())
         mosaic_type = self.mosaic_type.get()
         self.mosaic_editor.set_mosaic_params(mosaic_size, mosaic_type)
         
-        # 应用马赛克
-        self.mosaic_editor.apply_mosaic_area(x, y)
+        # 计算两点之间的距离
+        dx = x2 - x1
+        dy = y2 - y1
+        distance = (dx ** 2 + dy ** 2) ** 0.5
+        
+        # 根据距离计算绘制步数，确保连续绘制
+        step_size = max(5, mosaic_size // 4)  # 自适应步长
+        steps = max(1, int(distance / step_size) + 1)
+        
+        # 实现连续绘制，使马赛克效果更连贯
+        for i in range(steps):
+            t = i / steps
+            x = x1 + dx * t
+            y = y1 + dy * t
+            self.mosaic_editor.apply_mosaic_area(x, y)
+        
+        # 应用最后一个点的马赛克
+        self.mosaic_editor.apply_mosaic_area(x2, y2)
         
         # 更新预览
         self.preview_image = self.mosaic_editor.merge()
