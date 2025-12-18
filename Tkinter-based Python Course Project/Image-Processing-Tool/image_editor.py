@@ -39,8 +39,12 @@ class DoodleEditor:
         """绘制平滑的线条或橡皮擦"""
         # 橡皮擦模式使用透明色
         draw_color = (0, 0, 0, 0) if self.mode == "eraser" else self.color
-        # 使用PIL支持的参数绘制线条，移除不支持的blend参数
-        self.draw.line((x1, y1, x2, y2), fill=draw_color, width=self.size)
+        # 使用PIL支持的参数绘制线条，设置圆形笔触
+        self.draw.line(
+            (x1, y1, x2, y2), 
+            fill=draw_color, 
+            width=self.size
+        )
 
     def merge(self):
         return Image.alpha_composite(self.base.convert("RGBA"), self.layer).convert("RGB")
@@ -269,6 +273,13 @@ class ModernEditor(tk.Tk):
         self.show_delete_button = False
         self.delete_button = None
         self.delete_button_rect = None
+        
+        # 局部放大视图相关变量
+        self.show_magnifier = False  # 是否显示放大镜
+        self.magnifier_size = 80  # 减小放大镜大小
+        self.magnifier_scale = 1.5  # 调整放大倍数
+        self.magnifier_x = 0  # 放大镜位置
+        self.magnifier_y = 0
 
         # --- UI 初始化 ---
         self._setup_styles()
@@ -469,6 +480,10 @@ class ModernEditor(tk.Tk):
             if show_delete:
                 self.show_delete_button = True
                 self._show_delete_button()
+            
+            # 绘制放大镜
+            if self.show_magnifier and self.preview_image:
+                self._draw_magnifier(cx, cy, new_w, new_h)
 
         except Exception as e:
             error_msg = f"渲染错误: {str(e)}"
@@ -528,6 +543,27 @@ class ModernEditor(tk.Tk):
             self.doodle_editor = DoodleEditor(self.editing_image.copy())
             self.text_watermark = DraggableTextWatermark(self.editing_image.copy())
             self.crop_controller = CropController(self.editing_image.copy())
+            self._update_canvas()
+    
+    def _restore_original(self):
+        """恢复原始图像"""
+        if self.original_image:
+            self._push_history()
+            self.editing_image = self.original_image.copy()
+            self.preview_image = self.original_image.copy()
+            self._reset_adjust_params()
+            # 重新初始化所有功能实例
+            self.doodle_editor = DoodleEditor(self.editing_image.copy())
+            self.text_watermark = DraggableTextWatermark(self.editing_image.copy())
+            self.crop_controller = CropController(self.editing_image.copy())
+            # 重置裁剪状态
+            self.is_cropping = False
+            self.crop_start = None
+            self.crop_end = None
+            self.canvas.config(cursor="")
+            # 重置视图
+            self._reset_view()
+            # 更新画布
             self._update_canvas()
 
     def save_image(self):
@@ -798,6 +834,7 @@ class ModernEditor(tk.Tk):
         ttk.Button(rotate_angle_frame, text="旋转", command=self._rotate_by_angle).pack(side=tk.LEFT, padx=3)
         
         ttk.Button(self.panel_content, text="开始/重置裁剪框", command=self._init_crop_tool).pack(fill=tk.X, pady=5)
+        ttk.Button(self.panel_content, text="恢复原始图像", command=self._restore_original).pack(fill=tk.X, pady=5)
         ttk.Button(self.panel_content, text="✔ 确认裁剪", command=self._do_crop).pack(fill=tk.X, pady=20)
 
         # 初始化裁剪控制器
@@ -816,6 +853,7 @@ class ModernEditor(tk.Tk):
 
     def _init_crop_tool(self):
         self.is_cropping = True
+        self.current_tool = "crop"  # 确保当前工具为裁剪
         self.canvas.config(cursor="cross")
         self.crop_start = None
         self.resize_mode = None  # 调整模式：None, 'n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw'
@@ -1510,6 +1548,83 @@ class ModernEditor(tk.Tk):
     # 隐藏删除按钮
     def _hide_delete_button(self):
         self.canvas.delete("del_btn")
+    
+    def _hide_magnifier(self):
+        """隐藏放大镜"""
+        self.canvas.delete("magnifier")
+    
+    def _draw_magnifier(self, cx, cy, new_w, new_h):
+        """绘制放大镜视图"""
+        # 计算放大镜显示的区域
+        # 首先获取鼠标位置对应的图片坐标
+        mouse_x, mouse_y = self.magnifier_x, self.magnifier_y
+        
+        # 转换为图片上的实际坐标
+        img_x = (mouse_x - cx + new_w // 2) / self.zoom_scale
+        img_y = (mouse_y - cy + new_h // 2) / self.zoom_scale
+        
+        # 计算放大区域的大小
+        magnifier_radius = self.magnifier_size // 2
+        img_radius = int(magnifier_radius / self.magnifier_scale / self.zoom_scale)
+        
+        # 边界检查
+        x1 = max(0, int(img_x - img_radius))
+        y1 = max(0, int(img_y - img_radius))
+        x2 = min(self.preview_image.width, int(img_x + img_radius))
+        y2 = min(self.preview_image.height, int(img_y + img_radius))
+        
+        if x1 >= x2 or y1 >= y2:
+            return
+        
+        # 裁剪放大区域
+        magnified_region = self.preview_image.crop((x1, y1, x2, y2))
+        
+        # 放大区域
+        scaled_w = int((x2 - x1) * self.magnifier_scale)
+        scaled_h = int((y2 - y1) * self.magnifier_scale)
+        magnified_region = magnified_region.resize((scaled_w, scaled_h), Image.Resampling.LANCZOS)
+        
+        # 转换为Tkinter可用的图像
+        magnified_tk = ImageTk.PhotoImage(magnified_region)
+        
+        # 计算放大镜在画布上的位置
+        # 将放大镜固定显示在左上角，不跟随鼠标移动，避免遮挡擦除位置
+        mag_x = 20  # 固定在左上角
+        mag_y = 20  # 固定在左上角
+        
+        # 绘制放大镜背景
+        self.canvas.create_oval(
+            mag_x, mag_y,
+            mag_x + self.magnifier_size, mag_y + self.magnifier_size,
+            fill="white", outline="#333333", width=2, tags="magnifier"
+        )
+        
+        # 绘制放大后的图像
+        self.canvas.create_image(
+            mag_x + magnifier_radius,
+            mag_y + magnifier_radius,
+            image=magnified_tk, tags="magnifier"
+        )
+        
+        # 保存图像引用，防止被垃圾回收
+        self.magnified_tk = magnified_tk
+        
+        # 绘制指示线
+        self.canvas.create_line(
+            mouse_x, mouse_y,
+            mag_x + magnifier_radius, mag_y + magnifier_radius,
+            fill="#333333", width=1, tags="magnifier"
+        )
+        
+        # 绘制当前橡皮擦位置的圆
+        self.canvas.create_oval(
+            mouse_x - int(10 * self.zoom_scale),
+            mouse_y - int(10 * self.zoom_scale),
+            mouse_x + int(10 * self.zoom_scale),
+            mouse_y + int(10 * self.zoom_scale),
+            outline="white", width=2, tags="magnifier"
+        )
+    
     # 删除水印
     def _delete_watermark(self, event=None):
         """真正删除水印"""
@@ -1611,6 +1726,7 @@ class ModernEditor(tk.Tk):
         self.canvas.bind("<ButtonPress-1>", self._doodle_start)
         self.canvas.bind("<B1-Motion>", self._doodle_draw)
         self.canvas.bind("<ButtonRelease-1>", self._doodle_end)
+        self.canvas.bind("<Motion>", self._on_doodle_mouse_move)  # 添加鼠标移动事件
         self.last_draw_pos = None
 
     def _pick_brush_color(self):
@@ -1620,6 +1736,21 @@ class ModernEditor(tk.Tk):
     def _on_doodle_mode_change(self):
         if self.doodle_editor:
             self.doodle_editor.set_mode(self.doodle_mode.get())
+            # 根据模式显示或隐藏放大镜
+            current_mode = self.doodle_mode.get()
+            if current_mode == "eraser":
+                self.show_magnifier = True
+            else:
+                self.show_magnifier = False
+                self._hide_magnifier()
+    
+    def _on_doodle_mouse_move(self, event):
+        """处理鼠标移动事件，更新放大镜位置"""
+        if self.show_magnifier:
+            # 更新放大镜位置
+            self.magnifier_x, self.magnifier_y = event.x, event.y
+            # 重新绘制画布以更新放大镜
+            self._update_canvas()
 
     def _doodle_start(self, event):
         if not self.editing_image or not self.doodle_editor:
