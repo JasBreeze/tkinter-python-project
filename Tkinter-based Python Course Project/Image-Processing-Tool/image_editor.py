@@ -246,6 +246,7 @@ class ModernEditor(tk.Tk):
         self.preview_image = None  # 用于显示的图片（叠加了未应用的滤镜/调节）
         self.tk_image = None  # Canvas用的ImageTk对象
         self.history = []  # 撤销栈
+        self.redo_history = []  # 重做栈
 
         # --- 画布视图状态 ---
         self.zoom_scale = 1.0
@@ -280,6 +281,18 @@ class ModernEditor(tk.Tk):
         self.magnifier_scale = 1.5  # 调整放大倍数
         self.magnifier_x = 0  # 放大镜位置
         self.magnifier_y = 0
+        
+        # 贴纸相关变量
+        self.sticker_files = []  # 贴纸文件列表
+        self.selected_sticker = None  # 当前选中的贴纸
+        self.sticker_image = None  # 当前贴纸的Image对象
+        self.sticker_tk = None  # 当前贴纸的ImageTk对象
+        self.sticker_pos = (0, 0)  # 贴纸在图片上的位置
+        self.is_dragging_sticker = False  # 是否正在拖动贴纸
+        self.sticker_drag_offset_x = 0  # 贴纸拖动偏移量X
+        self.sticker_drag_offset_y = 0  # 贴纸拖动偏移量Y
+        self.is_sticker_applied = False  # 贴纸是否已应用到图片
+        self.show_sticker_delete_button = False  # 是否显示贴纸删除按钮
 
         # --- UI 初始化 ---
         self._setup_styles()
@@ -316,6 +329,7 @@ class ModernEditor(tk.Tk):
         self._create_header_btn(header, "📂 打开图片", self.open_image)
         self._create_header_btn(header, "💾 保存", self.save_image)
         self._create_header_btn(header, "↩ 撤销 (Ctrl+Z)", self.undo)
+        self._create_header_btn(header, "↪ 重做 (Ctrl+Y)", self.redo)
         self._create_header_btn(header, "✨ 自动优化", self.auto_enhance)
 
         # 2. 主容器
@@ -334,6 +348,7 @@ class ModernEditor(tk.Tk):
         self._add_sidebar_tool("添加\n水印", "text", lambda: self.show_panel("text"))
         self._add_sidebar_tool("涂鸦\n笔刷", "doodle", lambda: self.show_panel("doodle"))
         self._add_sidebar_tool("马赛克", "mosaic", lambda: self.show_panel("mosaic"))
+        self._add_sidebar_tool("添加\n贴纸", "sticker", lambda: self.show_panel("sticker"))
 
         # 2.2 右侧属性面板 (Properties) - 默认隐藏，动态显示
         self.prop_panel = tk.Frame(main_container, bg=COLORS["bg_panel"], width=280)
@@ -382,6 +397,7 @@ class ModernEditor(tk.Tk):
         self.canvas.bind("<B3-Motion>", self._on_pan_move)
         # 快捷键
         self.bind("<Control-z>", lambda e: self.undo())
+        self.bind("<Control-y>", lambda e: self.redo())
         self.bind("<Control-s>", lambda e: self.save_image())
 
     # --- 核心逻辑: 图片加载与显示 ---
@@ -466,7 +482,7 @@ class ModernEditor(tk.Tk):
             cy = self.canvas.winfo_height() // 2 + self.pan_offset_y
 
             # 保存删除按钮状态
-            show_delete = self.show_delete_button
+            show_delete = self.show_delete_button or self.show_sticker_delete_button
             self._hide_delete_button()
 
             self.canvas.delete("all")
@@ -475,11 +491,15 @@ class ModernEditor(tk.Tk):
             # 如果有裁剪框等覆盖层，需重新绘制
             if self.current_tool == "crop":
                 self._draw_crop_rect(cx, cy, new_w, new_h)
-            
+        
             # 如果之前显示了删除按钮，重新绘制
             if show_delete:
-                self.show_delete_button = True
-                self._show_delete_button()
+                if self.text_watermark:
+                    self.show_delete_button = True
+                    self._show_delete_button()
+                elif self.sticker_image:
+                    self.show_sticker_delete_button = True
+                    self._show_sticker_delete_button()
             
             # 绘制放大镜
             if self.show_magnifier and self.preview_image:
@@ -532,14 +552,33 @@ class ModernEditor(tk.Tk):
         """保存当前 editing_image 到历史栈"""
         if self.editing_image:
             self.history.append(self.editing_image.copy())
+            # 新操作时清空重做栈
+            self.redo_history.clear()
             if len(self.history) > 15: self.history.pop(0)
 
     def undo(self):
         if self.history:
+            # 将当前状态保存到重做栈
+            self.redo_history.append(self.editing_image.copy())
+            # 从撤销栈获取上一个状态
             self.editing_image = self.history.pop()
             self.preview_image = self.editing_image.copy()
             self._reset_adjust_params()
             # 重新初始化所有功能实例，确保它们基于撤销后的图像
+            self.doodle_editor = DoodleEditor(self.editing_image.copy())
+            self.text_watermark = DraggableTextWatermark(self.editing_image.copy())
+            self.crop_controller = CropController(self.editing_image.copy())
+            self._update_canvas()
+    
+    def redo(self):
+        if self.redo_history:
+            # 将当前状态保存到撤销栈
+            self.history.append(self.editing_image.copy())
+            # 从重做栈获取下一个状态
+            self.editing_image = self.redo_history.pop()
+            self.preview_image = self.editing_image.copy()
+            self._reset_adjust_params()
+            # 重新初始化所有功能实例，确保它们基于重做后的图像
             self.doodle_editor = DoodleEditor(self.editing_image.copy())
             self.text_watermark = DraggableTextWatermark(self.editing_image.copy())
             self.crop_controller = CropController(self.editing_image.copy())
@@ -627,7 +666,8 @@ class ModernEditor(tk.Tk):
         # 根据工具构建 UI
         titles = {
             "adjust": "光效调节", "filter": "滤镜库",
-            "crop": "裁剪构图", "text": "添加水印", "doodle": "画笔涂鸦", "mosaic": "马赛克工具"
+            "crop": "裁剪构图", "text": "添加水印", "doodle": "画笔涂鸦", "mosaic": "马赛克工具",
+            "sticker": "贴纸"
         }
         self.panel_title.config(text=titles.get(tool_name, "工具"))
 
@@ -643,6 +683,8 @@ class ModernEditor(tk.Tk):
             self._build_doodle_panel()
         elif tool_name == "mosaic":
             self._build_mosaic_panel()
+        elif tool_name == "sticker":
+            self._build_sticker_panel()
 
     def _apply_pending_changes(self):
         """应用当前面板的临时修改"""
@@ -659,8 +701,21 @@ class ModernEditor(tk.Tk):
             pass
         
         # 切换工具时隐藏删除按钮
-        if self.show_delete_button:
+        if self.show_delete_button or self.show_sticker_delete_button:
             self._hide_delete_button()
+            
+        # 切换工具时重置贴纸和水印状态
+        if self.current_tool != "sticker" and self.sticker_image:
+            # 切换工具时，如果有未确认的贴纸，重置状态
+            self.sticker_image = None
+            self.selected_sticker = None
+            self.preview_image = self.editing_image.copy()
+            self._update_canvas()
+        elif self.current_tool != "text" and self.text_watermark:
+            # 切换工具时，如果有未确认的水印，重置状态
+            self.text_watermark = None
+            self.preview_image = self.editing_image.copy()
+            self._update_canvas()
 
             # --- 1. 基础调节模块 (Real-time) ---
 
@@ -1513,6 +1568,31 @@ class ModernEditor(tk.Tk):
 
         # 显示删除按钮
         self._show_delete_button()
+        self.show_delete_button = True
+    
+    def _on_sticker_right_click(self, event):
+        """右键点击贴纸：显示删除按钮 ❌"""
+        if not self.sticker_image:
+            return
+
+        # 检查是否点中了贴纸区域
+        px, py = self._screen_to_image(event.x, event.y)
+        if px is None:
+            return
+
+        # 计算贴纸的实际边界
+        x1 = self.sticker_pos[0] - self.sticker_image.width // 2
+        y1 = self.sticker_pos[1] - self.sticker_image.height // 2
+        x2 = x1 + self.sticker_image.width
+        y2 = y1 + self.sticker_image.height
+
+        # 判断点击是否落在贴纸内
+        if not (x1 <= px <= x2 and y1 <= py <= y2):
+            return
+
+        # 显示删除按钮
+        self._show_sticker_delete_button()
+        self.show_sticker_delete_button = True
 
     def _show_delete_button(self):
         """在水印右上角绘制 ❌ 按钮"""
@@ -1545,9 +1625,42 @@ class ModernEditor(tk.Tk):
         )
 
         self.canvas.tag_bind("del_btn", "<Button-1>", self._delete_watermark)
+        
+    def _show_sticker_delete_button(self):
+        """在贴纸右上角绘制 ❌ 按钮"""
+        self._hide_delete_button()
+
+        if not self.sticker_image:
+            return
+
+        # 计算贴纸右上角映射到画布位置
+        sx, sy = self._image_to_screen(
+            self.sticker_pos[0] + self.sticker_image.width // 2,
+            self.sticker_pos[1] - self.sticker_image.height // 2
+        )
+
+        btn_size = 22
+
+        # 画圆
+        self.del_btn_circle = self.canvas.create_oval(
+            sx, sy - btn_size,
+            sx + btn_size, sy,
+            fill="#ff4444", outline="white", width=2, tags="del_btn"
+        )
+
+        # 写 ❌
+        self.del_btn_text = self.canvas.create_text(
+            sx + btn_size // 2, sy - btn_size // 2,
+            text="×", fill="white", font=("Arial", 15, "bold"), tags="del_btn"
+        )
+
+        self.canvas.tag_bind("del_btn", "<Button-1>", self._delete_sticker)
+    
     # 隐藏删除按钮
     def _hide_delete_button(self):
         self.canvas.delete("del_btn")
+        self.show_delete_button = False
+        self.show_sticker_delete_button = False
     
     def _hide_magnifier(self):
         """隐藏放大镜"""
@@ -2033,7 +2146,201 @@ class ModernEditor(tk.Tk):
         # 结束马赛克绘制，切换到调整面板
         self._hide_delete_button()
         self.show_panel("adjust")
-
+    
+    def _build_sticker_panel(self):
+        """构建贴纸面板"""
+        # 加载贴纸文件
+        sticker_dir = "c:/Users/32849/Desktop/python_project/test04/Sticker/"
+        self.sticker_files = [os.path.join(sticker_dir, f) for f in os.listdir(sticker_dir) 
+                             if f.endswith((".png", ".jpg", ".jpeg", ".bmp"))]
+        
+        # 创建滚动条
+        scroll_frame = ttk.Frame(self.panel_content)
+        scroll_frame.pack(fill=tk.BOTH, expand=True)
+        
+        canvas = tk.Canvas(scroll_frame, bg=COLORS["bg_panel"])
+        scrollbar = ttk.Scrollbar(scroll_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(
+                scrollregion=canvas.bbox("all")
+            )
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # 显示贴纸网格
+        sticker_frame = ttk.Frame(scrollable_frame)
+        sticker_frame.pack(pady=10)
+        
+        # 每行显示3个贴纸
+        row = 0
+        col = 0
+        for sticker_path in self.sticker_files:
+            # 创建贴纸缩略图
+            sticker_img = Image.open(sticker_path)
+            # 调整贴纸大小为80x80
+            sticker_img.thumbnail((80, 80), Image.Resampling.LANCZOS)
+            sticker_tk = ImageTk.PhotoImage(sticker_img)
+            
+            # 创建贴纸按钮
+            sticker_btn = tk.Button(sticker_frame, image=sticker_tk, 
+                                  bg=COLORS["bg_tool"], bd=0, 
+                                  command=lambda path=sticker_path: self._select_sticker(path))
+            sticker_btn.image = sticker_tk  # 保存引用，防止被垃圾回收
+            sticker_btn.grid(row=row, column=col, padx=5, pady=5)
+            
+            col += 1
+            if col >= 3:
+                col = 0
+                row += 1
+        
+        # 放置画布和滚动条
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        ttk.Label(self.panel_content, text="* 点击贴纸添加到图片，添加后可拖动调整位置", foreground="#888888").pack(pady=10)
+        ttk.Button(self.panel_content, text="✔ 确认添加贴纸", command=self._confirm_sticker).pack(fill=tk.X, pady=5)
+        
+        # 绑定画布事件，用于贴纸拖动和删除
+        if self.editing_image:
+            self.canvas.bind("<ButtonPress-1>", self._on_sticker_press)
+            self.canvas.bind("<B1-Motion>", self._on_sticker_drag)
+            self.canvas.bind("<ButtonRelease-1>", self._on_sticker_release)
+            self.canvas.bind("<ButtonPress-3>", self._on_sticker_right_click)
+    
+    def _select_sticker(self, sticker_path):
+        """选择贴纸"""
+        self.selected_sticker = sticker_path
+        # 加载贴纸
+        self.sticker_image = Image.open(sticker_path).convert("RGBA")
+        # 将贴纸放置在图片中心
+        if self.editing_image:
+            self.sticker_pos = (self.editing_image.width // 2, self.editing_image.height // 2)
+            # 更新预览
+            self._update_sticker_preview()
+    
+    def _update_sticker_preview(self):
+        """更新贴纸预览"""
+        if not self.editing_image or not self.sticker_image:
+            return
+        
+        # 创建带贴纸的预览图
+        preview_img = self.editing_image.copy().convert("RGBA")
+        sticker = self.sticker_image.copy()
+        # 计算贴纸位置，确保完全在图片内
+        x = self.sticker_pos[0] - sticker.width // 2
+        y = self.sticker_pos[1] - sticker.height // 2
+        # 边界检查
+        x = max(0, min(x, preview_img.width - sticker.width))
+        y = max(0, min(y, preview_img.height - sticker.height))
+        # 转换为整数坐标，修复TypeError
+        x = int(x)
+        y = int(y)
+        # 粘贴贴纸
+        preview_img.paste(sticker, (x, y), sticker)
+        # 更新预览
+        self.preview_image = preview_img.convert("RGB")
+        self._update_canvas()
+    
+    def _on_sticker_press(self, event):
+        """贴纸拖动开始"""
+        if not self.sticker_image or not self.editing_image:
+            return
+        
+        # 转换屏幕坐标到图片坐标
+        px, py = self._screen_to_image(event.x, event.y)
+        if px is None:
+            return
+        
+        # 检查是否点击在贴纸上
+        x1 = self.sticker_pos[0] - self.sticker_image.width // 2
+        y1 = self.sticker_pos[1] - self.sticker_image.height // 2
+        x2 = x1 + self.sticker_image.width
+        y2 = y1 + self.sticker_image.height
+        
+        if not (x1 <= px <= x2 and y1 <= py <= y2):
+            return
+        
+        self.is_dragging_sticker = True
+        self.canvas.config(cursor="fleur")
+        
+        # 记录鼠标与贴纸位置的偏移（为了防止跳动）
+        self.sticker_drag_offset_x = px - self.sticker_pos[0]
+        self.sticker_drag_offset_y = py - self.sticker_pos[1]
+    
+    def _on_sticker_drag(self, event):
+        """贴纸拖动中"""
+        if not self.is_dragging_sticker:
+            return
+        
+        # 转换屏幕坐标到图片坐标
+        px, py = self._screen_to_image(event.x, event.y)
+        if px is None:
+            return
+        
+        # 实时移动贴纸
+        self.sticker_pos = (px - self.sticker_drag_offset_x, py - self.sticker_drag_offset_y)
+        
+        # 更新预览
+        self._update_sticker_preview()
+    
+    def _on_sticker_release(self, event):
+        """贴纸拖动结束"""
+        if self.is_dragging_sticker:
+            self.is_dragging_sticker = False
+            self.canvas.config(cursor="")
+            # 更新预览
+            self._update_sticker_preview()
+    
+    def _confirm_sticker(self):
+        """确认添加贴纸"""
+        if not self.editing_image or not self.sticker_image:
+            messagebox.showinfo("提示", "请先选择一个贴纸")
+            return
+        
+        self._push_history()
+        
+        # 将贴纸应用到编辑图像
+        self.editing_image = self.preview_image.copy()
+        
+        # 更新预览图像为编辑图像的副本，此时已经包含了固定的贴纸
+        self.preview_image = self.editing_image.copy()
+        
+        # 关键修复：清除sticker_image对象
+        # 这样就不会在原位置拖动时出现复制贴纸的问题
+        # 只有当用户开始编辑新贴纸时，才会重新创建sticker_image对象
+        self.sticker_image = None
+        self.selected_sticker = None
+        
+        # 确保当前工具仍然是sticker，但此时没有活跃的贴纸对象
+        self.current_tool = "sticker"
+        
+        # 更新其他功能实例
+        self.doodle_editor = DoodleEditor(self.editing_image.copy())
+        self.text_watermark = DraggableTextWatermark(self.editing_image.copy())
+        self.crop_controller = CropController(self.editing_image.copy())
+        
+        self._update_canvas()
+        messagebox.showinfo("提示", "贴纸已添加")
+        
+        # 解绑拖动事件，避免在没有贴纸时触发
+        self.canvas.unbind("<ButtonPress-1>")
+        self.canvas.unbind("<B1-Motion>")
+        self.canvas.unbind("<ButtonRelease-1>")
+        self.canvas.unbind("<ButtonPress-3>")
+    
+    def _delete_sticker(self, event=None):
+        """删除当前贴纸"""
+        if self.sticker_image:
+            self.sticker_image = None
+            self.selected_sticker = None
+            self.preview_image = self.editing_image.copy()
+            self._hide_delete_button()
+            self._update_canvas()
 
 if __name__ == "__main__":
     # 高分屏适配
