@@ -26,15 +26,21 @@ class DoodleEditor:
         self.draw = ImageDraw.Draw(self.layer)
         self.size = 20
         self.color = (255, 0, 0, 255)
+        self.mode = "brush"  # "brush" or "eraser"
 
     def set_brush(self, size, color):
         self.size = size
         self.color = color
 
+    def set_mode(self, mode):
+        self.mode = mode
+
     def draw_line(self, x1, y1, x2, y2):
-        """绘制平滑的线条"""
-        # 使用PIL支持的参数绘制线条
-        self.draw.line((x1, y1, x2, y2), fill=self.color, width=self.size)
+        """绘制平滑的线条或橡皮擦"""
+        # 橡皮擦模式使用透明色
+        draw_color = (0, 0, 0, 0) if self.mode == "eraser" else self.color
+        # 使用PIL支持的参数绘制线条，移除不支持的blend参数
+        self.draw.line((x1, y1, x2, y2), fill=draw_color, width=self.size)
 
     def merge(self):
         return Image.alpha_composite(self.base.convert("RGBA"), self.layer).convert("RGB")
@@ -1131,6 +1137,44 @@ class ModernEditor(tk.Tk):
         self._reset_view()
         self._update_canvas()
     
+    def _flip_diagonal(self):
+        """对角线对称（左上到右下）"""
+        if not self.editing_image: return
+        
+        self._push_history()
+        # 对角线对称：先旋转90度，再水平翻转
+        img = self.editing_image.rotate(90, expand=True)
+        img = ImageOps.mirror(img)
+        self.editing_image = img
+        self.preview_image = self.editing_image.copy()
+        
+        # 更新其他功能实例
+        self.doodle_editor = DoodleEditor(self.editing_image.copy())
+        self.text_watermark = DraggableTextWatermark(self.editing_image.copy())
+        self.crop_controller = CropController(self.editing_image.copy())
+        
+        self._reset_view()
+        self._update_canvas()
+    
+    def _flip_anti_diagonal(self):
+        """反对角线对称（右上到左下）"""
+        if not self.editing_image: return
+        
+        self._push_history()
+        # 反对角线对称：先旋转-90度，再水平翻转
+        img = self.editing_image.rotate(-90, expand=True)
+        img = ImageOps.mirror(img)
+        self.editing_image = img
+        self.preview_image = self.editing_image.copy()
+        
+        # 更新其他功能实例
+        self.doodle_editor = DoodleEditor(self.editing_image.copy())
+        self.text_watermark = DraggableTextWatermark(self.editing_image.copy())
+        self.crop_controller = CropController(self.editing_image.copy())
+        
+        self._reset_view()
+        self._update_canvas()
+    
     def _on_rotate_angle_change(self):
         """旋转角度变化时的处理"""
         # 确保角度在0-360范围内
@@ -1539,6 +1583,14 @@ class ModernEditor(tk.Tk):
         self.brush_size_scale = ttk.Scale(self.panel_content, from_=5, to=100, value=20)
         self.brush_size_scale.pack(fill=tk.X)
 
+        # 绘制模式选择
+        ttk.Label(self.panel_content, text="绘制模式:").pack(anchor=tk.W, pady=(10, 0))
+        self.doodle_mode = tk.StringVar(value="brush")
+        mode_frame = tk.Frame(self.panel_content, bg=COLORS["bg_panel"])
+        mode_frame.pack(fill=tk.X, pady=5)
+        ttk.Radiobutton(mode_frame, text="笔刷", variable=self.doodle_mode, value="brush", command=self._on_doodle_mode_change).pack(side=tk.LEFT, padx=10)
+        ttk.Radiobutton(mode_frame, text="橡皮擦", variable=self.doodle_mode, value="eraser", command=self._on_doodle_mode_change).pack(side=tk.LEFT, padx=10)
+
         # 画笔颜色
         ttk.Button(self.panel_content, text="选择颜色", command=self._pick_brush_color).pack(fill=tk.X, pady=5)
         self.brush_color = "#ff0000"
@@ -1564,6 +1616,10 @@ class ModernEditor(tk.Tk):
     def _pick_brush_color(self):
         c = colorchooser.askcolor(color=self.brush_color)[1]
         if c: self.brush_color = c
+
+    def _on_doodle_mode_change(self):
+        if self.doodle_editor:
+            self.doodle_editor.set_mode(self.doodle_mode.get())
 
     def _doodle_start(self, event):
         if not self.editing_image or not self.doodle_editor:
@@ -1610,11 +1666,17 @@ class ModernEditor(tk.Tk):
         
         # 设置画笔属性
         brush_size = int(self.brush_size_scale.get())
-        # 将十六进制颜色转换为RGBA
-        r = int(self.brush_color[1:3], 16)
-        g = int(self.brush_color[3:5], 16)
-        b = int(self.brush_color[5:7], 16)
-        color = (r, g, b, 255)
+        current_mode = self.doodle_mode.get()
+        
+        # 只有在笔刷模式下才设置颜色，橡皮擦模式使用透明色
+        if current_mode == "brush":
+            # 将十六进制颜色转换为RGBA
+            r = int(self.brush_color[1:3], 16)
+            g = int(self.brush_color[3:5], 16)
+            b = int(self.brush_color[5:7], 16)
+            color = (r, g, b, 255)
+        else:  # 橡皮擦模式
+            color = (255, 0, 0, 0)  # 透明色，用于擦除
         
         self.doodle_editor.set_brush(brush_size, color)
         
@@ -1636,12 +1698,20 @@ class ModernEditor(tk.Tk):
         
         points = self.draw_points[-4:] if len(self.draw_points) >= 4 else self.draw_points
         
-        # 获取画笔属性
+        # 获取画笔属性并更新到doodle_editor
         brush_size = int(self.brush_size_scale.get())
-        r = int(self.brush_color[1:3], 16)
-        g = int(self.brush_color[3:5], 16)
-        b = int(self.brush_color[5:7], 16)
-        color = (r, g, b, 255)
+        current_mode = self.doodle_mode.get()
+        
+        # 只有在笔刷模式下才设置颜色，橡皮擦模式使用透明色
+        if current_mode == "brush":
+            r = int(self.brush_color[1:3], 16)
+            g = int(self.brush_color[3:5], 16)
+            b = int(self.brush_color[5:7], 16)
+            color = (r, g, b, 255)
+        else:  # 橡皮擦模式
+            color = (255, 0, 0, 0)  # 透明色，用于擦除
+        
+        self.doodle_editor.set_brush(brush_size, color)
         
         # 使用Catmull-Rom样条曲线平滑
         for i in range(len(points) - 1):
@@ -1679,7 +1749,7 @@ class ModernEditor(tk.Tk):
                 cp2 = (p_next[0] - (p_next_next[0] - p_current[0]) * tension * 0.15,
                        p_next[1] - (p_next_next[1] - p_current[1]) * tension * 0.15)
             
-            # 使用贝塞尔曲线绘制
+            # 使用贝塞尔曲线绘制，不再传递color和brush_size，直接使用doodle_editor的设置
             self._draw_bezier(points[i], cp1, cp2, points[i+1], color, brush_size)
     
     def _draw_bezier(self, p0, cp1, cp2, p3, color, width):
@@ -1696,8 +1766,8 @@ class ModernEditor(tk.Tk):
             x1 = self._bezier_point(p0[0], cp1[0], cp2[0], p3[0], t1)
             y1 = self._bezier_point(p0[1], cp1[1], cp2[1], p3[1], t1)
             
-            # 绘制小段直线，使用PIL支持的参数
-            self.doodle_editor.draw.line((x0, y0, x1, y1), fill=color, width=width)
+            # 使用doodle_editor的draw_line方法，这样可以利用橡皮擦功能
+            self.doodle_editor.draw_line(x0, y0, x1, y1)
     
     def _bezier_point(self, p0, cp1, cp2, p3, t):
         """计算贝塞尔曲线上的单个点"""
