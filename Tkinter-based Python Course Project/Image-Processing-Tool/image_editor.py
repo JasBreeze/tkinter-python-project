@@ -328,9 +328,12 @@ class ModernEditor(tk.Tk):
         header.pack(side=tk.TOP, fill=tk.X)
         self._create_header_btn(header, "📂 打开图片", self.open_image)
         self._create_header_btn(header, "💾 保存", self.save_image)
+        self._create_header_btn(header, "🔄 重命名", self.rename_image)
         self._create_header_btn(header, "↩ 撤销 (Ctrl+Z)", self.undo)
         self._create_header_btn(header, "↪ 重做 (Ctrl+Y)", self.redo)
         self._create_header_btn(header, "✨ 自动优化", self.auto_enhance)
+        self._create_header_btn(header, "🔄 批量转换格式", self.batch_convert_format)
+        self._create_header_btn(header, "🔖 批量添加水印", self.batch_add_watermark)
 
         # 2. 主容器
         main_container = ttk.Frame(self, style="Main.TFrame")
@@ -460,7 +463,6 @@ class ModernEditor(tk.Tk):
         new_h = int(orig_h * self.zoom_scale)
 
         # 2. 性能优化：如果缩放太小，用 thumbnail，否则 resize
-        # 这里为了简单直接 resize，实际项目可加缓存
         try:
             display_img = None
             
@@ -501,7 +503,7 @@ class ModernEditor(tk.Tk):
                     self.show_sticker_delete_button = True
                     self._show_sticker_delete_button()
             
-            # 绘制放大镜
+            # 绘制放大镜（只有在橡皮擦模式且正在擦除时才显示）
             if self.show_magnifier and self.preview_image:
                 self._draw_magnifier(cx, cy, new_w, new_h)
 
@@ -635,6 +637,49 @@ class ModernEditor(tk.Tk):
                 self.editing_image.save(path, quality=95)
                 messagebox.showinfo("成功", "保存成功")
 
+    def rename_image(self):
+        """重命名当前图片文件"""
+        if not self.editing_image or not self.filepath:
+            messagebox.showinfo("提示", "请先打开一张图片")
+            return
+        
+        # 获取当前文件名和目录
+        import os
+        dir_path, old_name = os.path.split(self.filepath)
+        old_name_no_ext, ext = os.path.splitext(old_name)
+        
+        # 弹出对话框让用户输入新文件名
+        new_name = simpledialog.askstring("重命名", f"当前文件名: {old_name}\n请输入新文件名:", initialvalue=old_name_no_ext)
+        
+        if new_name:
+            # 验证新文件名的有效性
+            if not new_name.strip():
+                messagebox.showerror("错误", "文件名不能为空")
+                return
+            
+            # 检查文件名中是否包含非法字符
+            invalid_chars = '<>:"/\\|?*'
+            if any(char in invalid_chars for char in new_name):
+                messagebox.showerror("错误", "文件名包含非法字符")
+                return
+            
+            # 构建新的文件路径
+            new_filepath = os.path.join(dir_path, new_name + ext)
+            
+            # 检查新文件名是否已存在
+            if os.path.exists(new_filepath):
+                messagebox.showerror("错误", "文件名已存在")
+                return
+            
+            try:
+                # 重命名文件
+                os.rename(self.filepath, new_filepath)
+                # 更新filepath属性
+                self.filepath = new_filepath
+                messagebox.showinfo("成功", "图片重命名成功")
+            except Exception as e:
+                messagebox.showerror("错误", f"重命名失败: {str(e)}")
+    
     def auto_enhance(self):
         """自动美化（示例功能）"""
         if not self.editing_image: return
@@ -1701,42 +1746,93 @@ class ModernEditor(tk.Tk):
         magnified_tk = ImageTk.PhotoImage(magnified_region)
         
         # 计算放大镜在画布上的位置
-        # 将放大镜固定显示在左上角，不跟随鼠标移动，避免遮挡擦除位置
+        # 将放大镜固定显示在左上角，参考示例图
         mag_x = 20  # 固定在左上角
         mag_y = 20  # 固定在左上角
         
-        # 绘制放大镜背景
+        # 1. 绘制放大镜阴影，增强立体感
+        shadow_offset = 3
+        self.canvas.create_oval(
+            mag_x + shadow_offset, mag_y + shadow_offset,
+            mag_x + self.magnifier_size + shadow_offset, mag_y + self.magnifier_size + shadow_offset,
+            fill="#000000", outline="", width=0, tags="magnifier", stipple="gray50"
+        )
+        
+        # 2. 绘制放大镜边框
         self.canvas.create_oval(
             mag_x, mag_y,
             mag_x + self.magnifier_size, mag_y + self.magnifier_size,
             fill="white", outline="#333333", width=2, tags="magnifier"
         )
         
-        # 绘制放大后的图像
+        # 3. 绘制放大后的图像
         self.canvas.create_image(
             mag_x + magnifier_radius,
             mag_y + magnifier_radius,
             image=magnified_tk, tags="magnifier"
         )
         
-        # 保存图像引用，防止被垃圾回收
-        self.magnified_tk = magnified_tk
-        
-        # 绘制指示线
-        self.canvas.create_line(
-            mouse_x, mouse_y,
-            mag_x + magnifier_radius, mag_y + magnifier_radius,
-            fill="#333333", width=1, tags="magnifier"
+        # 4. 绘制放大镜内边框
+        self.canvas.create_oval(
+            mag_x + 2, mag_y + 2,
+            mag_x + self.magnifier_size - 2, mag_y + self.magnifier_size - 2,
+            fill="", outline="#666666", width=1, tags="magnifier"
         )
         
-        # 绘制当前橡皮擦位置的圆
+        # 5. 计算放大镜中心位置
+        center_x = mag_x + magnifier_radius
+        center_y = mag_y + magnifier_radius
+        
+        # 6. 绘制当前橡皮擦位置的圆（在原图上），使用实际笔刷大小
+        brush_size = int(self.brush_size_scale.get())
         self.canvas.create_oval(
-            mouse_x - int(10 * self.zoom_scale),
-            mouse_y - int(10 * self.zoom_scale),
-            mouse_x + int(10 * self.zoom_scale),
-            mouse_y + int(10 * self.zoom_scale),
+            mouse_x - int(brush_size * self.zoom_scale / 2),
+            mouse_y - int(brush_size * self.zoom_scale / 2),
+            mouse_x + int(brush_size * self.zoom_scale / 2),
+            mouse_y + int(brush_size * self.zoom_scale / 2),
             outline="white", width=2, tags="magnifier"
         )
+        
+        # 7. 在放大镜中心绘制圆形指示器
+        mag_brush_size = int(brush_size * self.magnifier_scale)
+        self.canvas.create_oval(
+            center_x - mag_brush_size / 2,
+            center_y - mag_brush_size / 2,
+            center_x + mag_brush_size / 2,
+            center_y + mag_brush_size / 2,
+            outline="white", width=2, tags="magnifier"
+        )
+        
+        # 8. 在放大镜中心绘制十字交叉线，叠加在圆形指示器上
+        cross_size = 8
+        self.canvas.create_line(
+            center_x - cross_size, center_y,
+            center_x + cross_size, center_y,
+            fill="white", width=1, tags="magnifier"
+        )
+        self.canvas.create_line(
+            center_x, center_y - cross_size,
+            center_x, center_y + cross_size,
+            fill="white", width=1, tags="magnifier"
+        )
+        
+        # 9. 在圆形指示器中心绘制十字交叉点，增强定位效果
+        dot_size = 2
+        self.canvas.create_rectangle(
+            center_x - dot_size, center_y - dot_size,
+            center_x + dot_size, center_y + dot_size,
+            fill="white", outline="", tags="magnifier"
+        )
+        
+        # 8. 绘制指示线，连接鼠标和放大镜
+        self.canvas.create_line(
+            mouse_x, mouse_y,
+            center_x, center_y,
+            fill="#333333", width=1, dash=(4, 2), tags="magnifier"
+        )
+        
+        # 保存图像引用，防止被垃圾回收
+        self.magnified_tk = magnified_tk
     
     # 删除水印
     def _delete_watermark(self, event=None):
@@ -1846,28 +1942,50 @@ class ModernEditor(tk.Tk):
         c = colorchooser.askcolor(color=self.brush_color)[1]
         if c: self.brush_color = c
 
+    def _get_brush_attributes(self):
+        """获取并设置画笔属性，返回当前模式"""
+        brush_size = int(self.brush_size_scale.get())
+        current_mode = self.doodle_mode.get()
+        
+        # 只有在笔刷模式下才设置颜色，橡皮擦模式使用透明色
+        if current_mode == "brush":
+            # 将十六进制颜色转换为RGBA
+            r = int(self.brush_color[1:3], 16)
+            g = int(self.brush_color[3:5], 16)
+            b = int(self.brush_color[5:7], 16)
+            color = (r, g, b, 255)
+        else:  # 橡皮擦模式
+            color = (255, 0, 0, 0)  # 透明色，用于擦除
+        
+        # 更新画笔属性到doodle_editor
+        self.doodle_editor.set_brush(brush_size, color)
+        return current_mode
+    
     def _on_doodle_mode_change(self):
         if self.doodle_editor:
             self.doodle_editor.set_mode(self.doodle_mode.get())
-            # 根据模式显示或隐藏放大镜
-            current_mode = self.doodle_mode.get()
-            if current_mode == "eraser":
-                self.show_magnifier = True
-            else:
-                self.show_magnifier = False
-                self._hide_magnifier()
+            # 初始时隐藏放大镜，只有在擦除时才显示
+            self.show_magnifier = False
+            self._hide_magnifier()
     
     def _on_doodle_mouse_move(self, event):
         """处理鼠标移动事件，更新放大镜位置"""
+        # 只有在擦除状态下才显示放大镜
         if self.show_magnifier:
             # 更新放大镜位置
             self.magnifier_x, self.magnifier_y = event.x, event.y
-            # 重新绘制画布以更新放大镜
-            self._update_canvas()
-
+            # 放大镜会在_update_canvas中自动绘制，这里只更新位置
+    
     def _doodle_start(self, event):
         if not self.editing_image or not self.doodle_editor:
             return
+        
+        # 开始绘制/擦除时，如果是橡皮擦模式，显示放大镜
+        current_mode = self.doodle_mode.get()
+        if current_mode == "eraser":
+            self.show_magnifier = True
+            # 初始化放大镜位置
+            self.magnifier_x, self.magnifier_y = event.x, event.y
         
         self.last_draw_pos = (event.x, event.y)
         # 初始化点列表，用于存储绘制路径点
@@ -1884,6 +2002,28 @@ class ModernEditor(tk.Tk):
         x = (event.x - img_x1) / self.zoom_scale
         y = (event.y - img_y1) / self.zoom_scale
         self.draw_points.append((x, y))
+    
+    def _doodle_end(self, event):
+        if not self.editing_image or not self.doodle_editor:
+            return
+        
+        # 绘制结束，处理剩余的点
+        if len(self.draw_points) > 1:
+            # 使用贝塞尔曲线平滑绘制剩余路径
+            self._draw_smooth_path()
+        
+        # 更新预览和编辑图像，使绘制痕迹永久保留
+        self.preview_image = self.doodle_editor.merge()
+        self.editing_image = self.preview_image.copy()
+        self._update_canvas()
+        # 涂鸦时隐藏删除按钮
+        self._hide_delete_button()
+        # 清空点列表
+        self.draw_points = []
+        
+        # 结束擦除时，隐藏放大镜
+        self.show_magnifier = False
+        self._hide_magnifier()
 
     def _doodle_draw(self, event):
         if not self.last_draw_pos or not self.editing_image or not self.doodle_editor:
@@ -1909,20 +2049,7 @@ class ModernEditor(tk.Tk):
         self.draw_points.append((x, y))
         
         # 设置画笔属性
-        brush_size = int(self.brush_size_scale.get())
-        current_mode = self.doodle_mode.get()
-        
-        # 只有在笔刷模式下才设置颜色，橡皮擦模式使用透明色
-        if current_mode == "brush":
-            # 将十六进制颜色转换为RGBA
-            r = int(self.brush_color[1:3], 16)
-            g = int(self.brush_color[3:5], 16)
-            b = int(self.brush_color[5:7], 16)
-            color = (r, g, b, 255)
-        else:  # 橡皮擦模式
-            color = (255, 0, 0, 0)  # 透明色，用于擦除
-        
-        self.doodle_editor.set_brush(brush_size, color)
+        self._get_brush_attributes()
         
         # 当有足够的点时，使用平滑算法绘制
         if len(self.draw_points) > 2:
@@ -1931,6 +2058,8 @@ class ModernEditor(tk.Tk):
         
         # 更新预览
         self.preview_image = self.doodle_editor.merge()
+        # 更新放大镜位置
+        self.magnifier_x, self.magnifier_y = event.x, event.y
         self._update_canvas()
 
         self.last_draw_pos = (event.x, event.y)
@@ -1943,19 +2072,7 @@ class ModernEditor(tk.Tk):
         points = self.draw_points[-4:] if len(self.draw_points) >= 4 else self.draw_points
         
         # 获取画笔属性并更新到doodle_editor
-        brush_size = int(self.brush_size_scale.get())
-        current_mode = self.doodle_mode.get()
-        
-        # 只有在笔刷模式下才设置颜色，橡皮擦模式使用透明色
-        if current_mode == "brush":
-            r = int(self.brush_color[1:3], 16)
-            g = int(self.brush_color[3:5], 16)
-            b = int(self.brush_color[5:7], 16)
-            color = (r, g, b, 255)
-        else:  # 橡皮擦模式
-            color = (255, 0, 0, 0)  # 透明色，用于擦除
-        
-        self.doodle_editor.set_brush(brush_size, color)
+        self._get_brush_attributes()
         
         # 使用Catmull-Rom样条曲线平滑
         for i in range(len(points) - 1):
@@ -1994,9 +2111,9 @@ class ModernEditor(tk.Tk):
                        p_next[1] - (p_next_next[1] - p_current[1]) * tension * 0.15)
             
             # 使用贝塞尔曲线绘制，不再传递color和brush_size，直接使用doodle_editor的设置
-            self._draw_bezier(points[i], cp1, cp2, points[i+1], color, brush_size)
+            self._draw_bezier(points[i], cp1, cp2, points[i+1])
     
-    def _draw_bezier(self, p0, cp1, cp2, p3, color, width):
+    def _draw_bezier(self, p0, cp1, cp2, p3):
         """绘制贝塞尔曲线"""
         # 增加曲线分段数，使线条更平滑
         steps = 20  # 曲线分段数从10增加到20
@@ -2180,23 +2297,28 @@ class ModernEditor(tk.Tk):
         row = 0
         col = 0
         for sticker_path in self.sticker_files:
-            # 创建贴纸缩略图
-            sticker_img = Image.open(sticker_path)
-            # 调整贴纸大小为80x80
-            sticker_img.thumbnail((80, 80), Image.Resampling.LANCZOS)
-            sticker_tk = ImageTk.PhotoImage(sticker_img)
-            
-            # 创建贴纸按钮
-            sticker_btn = tk.Button(sticker_frame, image=sticker_tk, 
-                                  bg=COLORS["bg_tool"], bd=0, 
-                                  command=lambda path=sticker_path: self._select_sticker(path))
-            sticker_btn.image = sticker_tk  # 保存引用，防止被垃圾回收
-            sticker_btn.grid(row=row, column=col, padx=5, pady=5)
-            
-            col += 1
-            if col >= 3:
-                col = 0
-                row += 1
+            try:
+                # 创建贴纸缩略图
+                sticker_img = Image.open(sticker_path)
+                # 调整贴纸大小为80x80
+                sticker_img.thumbnail((80, 80), Image.Resampling.LANCZOS)
+                sticker_tk = ImageTk.PhotoImage(sticker_img)
+                
+                # 创建贴纸按钮
+                sticker_btn = tk.Button(sticker_frame, image=sticker_tk, 
+                                      bg=COLORS["bg_tool"], bd=0, 
+                                      command=lambda path=sticker_path: self._select_sticker(path))
+                sticker_btn.image = sticker_tk  # 保存引用，防止被垃圾回收
+                sticker_btn.grid(row=row, column=col, padx=5, pady=5)
+                
+                col += 1
+                if col >= 3:
+                    col = 0
+                    row += 1
+            except Exception as e:
+                # 忽略无法打开的贴纸文件
+                print(f"无法加载贴纸文件 {sticker_path}: {e}")
+                continue
         
         # 放置画布和滚动条
         canvas.pack(side="left", fill="both", expand=True)
@@ -2214,14 +2336,22 @@ class ModernEditor(tk.Tk):
     
     def _select_sticker(self, sticker_path):
         """选择贴纸"""
-        self.selected_sticker = sticker_path
-        # 加载贴纸
-        self.sticker_image = Image.open(sticker_path).convert("RGBA")
-        # 将贴纸放置在图片中心
-        if self.editing_image:
-            self.sticker_pos = (self.editing_image.width // 2, self.editing_image.height // 2)
-            # 更新预览
-            self._update_sticker_preview()
+        try:
+            self.selected_sticker = sticker_path
+            # 加载贴纸
+            self.sticker_image = Image.open(sticker_path).convert("RGBA")
+            # 将贴纸放置在图片中心
+            if self.editing_image:
+                self.sticker_pos = (self.editing_image.width // 2, self.editing_image.height // 2)
+                # 更新预览
+                self._update_sticker_preview()
+        except Exception as e:
+            # 忽略无法打开的贴纸文件
+            print(f"无法加载贴纸文件 {sticker_path}: {e}")
+            messagebox.showerror("错误", f"无法加载贴纸文件: {e}")
+            # 重置贴纸状态
+            self.selected_sticker = None
+            self.sticker_image = None
     
     def _update_sticker_preview(self):
         """更新贴纸预览"""
@@ -2341,6 +2471,271 @@ class ModernEditor(tk.Tk):
             self.preview_image = self.editing_image.copy()
             self._hide_delete_button()
             self._update_canvas()
+
+    def batch_convert_format(self):
+        """批量转换图片格式"""
+        # 选择要转换的图片文件
+        file_paths = filedialog.askopenfilenames(
+            filetypes=[("Images", "*.jpg *.png *.jpeg *.bmp *.webp")]
+        )
+        if not file_paths:
+            return
+        
+        # 选择目标格式
+        format_window = tk.Toplevel(self)
+        format_window.title("选择目标格式")
+        format_window.geometry("300x200")
+        format_window.configure(bg=COLORS["bg_main"])
+        
+        formats = [".jpg", ".png", ".webp", ".bmp", ".jpeg"]
+        selected_format = tk.StringVar(value=".jpg")
+        
+        tk.Label(format_window, text="选择目标格式:", bg=COLORS["bg_main"], fg=COLORS["fg_text"]).pack(pady=20)
+        
+        for fmt in formats:
+            tk.Radiobutton(
+                format_window, 
+                text=fmt, 
+                variable=selected_format, 
+                value=fmt,
+                bg=COLORS["bg_main"],
+                fg=COLORS["fg_text"],
+                selectcolor=COLORS["accent"]
+            ).pack(pady=5)
+        
+        def start_conversion():
+            fmt = selected_format.get()
+            format_window.destroy()
+            
+            # 选择保存目录
+            save_dir = filedialog.askdirectory(title="选择保存目录")
+            if not save_dir:
+                return
+            
+            success_count = 0
+            fail_count = 0
+            
+            for file_path in file_paths:
+                try:
+                    # 打开图片
+                    img = Image.open(file_path)
+                    
+                    # 获取原始文件名（不含扩展名）
+                    base_name = os.path.basename(file_path)
+                    name_without_ext = os.path.splitext(base_name)[0]
+                    
+                    # 构建新文件名
+                    new_file_path = os.path.join(save_dir, f"{name_without_ext}{fmt}")
+                    
+                    # 保存为目标格式
+                    if fmt.lower() == ".jpg" or fmt.lower() == ".jpeg":
+                        # JPG不支持透明通道，转换为RGB
+                        img = img.convert("RGB")
+                        img.save(new_file_path, quality=95)
+                    else:
+                        img.save(new_file_path, quality=95)
+                    
+                    success_count += 1
+                except Exception as e:
+                    print(f"转换失败 {file_path}: {e}")
+                    fail_count += 1
+            
+            messagebox.showinfo(
+                "转换完成",
+                f"批量转换完成！\n成功: {success_count}\n失败: {fail_count}"
+            )
+        
+        tk.Button(
+            format_window, 
+            text="开始转换",
+            command=start_conversion,
+            bg=COLORS["accent"],
+            fg="white",
+            bd=0,
+            padx=20,
+            pady=10
+        ).pack(pady=20)
+        
+        # 居中显示
+        format_window.transient(self)
+        format_window.grab_set()
+        self.wait_window(format_window)
+
+    def batch_add_watermark(self):
+        """批量添加统一水印"""
+        # 选择要添加水印的图片文件
+        file_paths = filedialog.askopenfilenames(
+            filetypes=[("Images", "*.jpg *.png *.jpeg *.bmp *.webp")]
+        )
+        if not file_paths:
+            return
+        
+        # 创建水印设置窗口
+        watermark_window = tk.Toplevel(self)
+        watermark_window.title("水印设置")
+        watermark_window.geometry("400x500")
+        watermark_window.configure(bg=COLORS["bg_main"])
+        
+        # 水印文字输入
+        tk.Label(watermark_window, text="水印文字:", bg=COLORS["bg_main"], fg=COLORS["fg_text"]).pack(pady=(20, 5), anchor=tk.W, padx=20)
+        watermark_text = tk.StringVar(value="")
+        tk.Entry(watermark_window, textvariable=watermark_text, width=40).pack(pady=5, padx=20)
+        
+        # 水印颜色
+        tk.Label(watermark_window, text="水印颜色:", bg=COLORS["bg_main"], fg=COLORS["fg_text"]).pack(pady=(15, 5), anchor=tk.W, padx=20)
+        watermark_color = tk.StringVar(value="#ffffff")
+        
+        def choose_color():
+            color = colorchooser.askcolor(color=watermark_color.get())[1]
+            if color:
+                watermark_color.set(color)
+                color_label.config(bg=color)
+        
+        color_frame = tk.Frame(watermark_window, bg=COLORS["bg_main"])
+        color_frame.pack(pady=5, padx=20, anchor=tk.W)
+        color_label = tk.Label(color_frame, width=10, bg=watermark_color.get())
+        color_label.pack(side=tk.LEFT)
+        tk.Button(color_frame, text="选择颜色", command=choose_color).pack(side=tk.LEFT, padx=10)
+        
+        # 水印大小
+        tk.Label(watermark_window, text="水印大小:", bg=COLORS["bg_main"], fg=COLORS["fg_text"]).pack(pady=(15, 5), anchor=tk.W, padx=20)
+        watermark_size = tk.Scale(watermark_window, from_=10, to=100, orient=tk.HORIZONTAL, value=30)
+        watermark_size.pack(pady=5, padx=20, fill=tk.X)
+        
+        # 水印位置
+        tk.Label(watermark_window, text="水印位置:", bg=COLORS["bg_main"], fg=COLORS["fg_text"]).pack(pady=(15, 5), anchor=tk.W, padx=20)
+        positions = ["右下角", "左下角", "右上角", "左上角", "中心"]
+        selected_position = tk.StringVar(value="右下角")
+        
+        position_frame = tk.Frame(watermark_window, bg=COLORS["bg_main"])
+        position_frame.pack(pady=5, padx=20, fill=tk.X)
+        
+        for pos in positions:
+            tk.Radiobutton(
+                position_frame, 
+                text=pos, 
+                variable=selected_position, 
+                value=pos,
+                bg=COLORS["bg_main"],
+                fg=COLORS["fg_text"],
+                selectcolor=COLORS["accent"]
+            ).pack(side=tk.LEFT, padx=10)
+        
+        # 透明度
+        tk.Label(watermark_window, text="透明度:", bg=COLORS["bg_main"], fg=COLORS["fg_text"]).pack(pady=(15, 5), anchor=tk.W, padx=20)
+        watermark_alpha = tk.Scale(watermark_window, from_=0, to=255, orient=tk.HORIZONTAL, value=180)
+        watermark_alpha.pack(pady=5, padx=20, fill=tk.X)
+        
+        def start_watermarking():
+            text = watermark_text.get()
+            if not text:
+                messagebox.showerror("错误", "水印文字不能为空")
+                return
+            
+            color = watermark_color.get()
+            size = watermark_size.get()
+            position = selected_position.get()
+            alpha = watermark_alpha.get()
+            
+            watermark_window.destroy()
+            
+            # 选择保存目录
+            save_dir = filedialog.askdirectory(title="选择保存目录")
+            if not save_dir:
+                return
+            
+            success_count = 0
+            fail_count = 0
+            
+            for file_path in file_paths:
+                try:
+                    # 打开图片
+                    img = Image.open(file_path).convert("RGBA")
+                    draw = ImageDraw.Draw(img)
+                    
+                    # 设置字体
+                    try:
+                        font = ImageFont.truetype("msyh.ttc", size)
+                    except:
+                        font = ImageFont.load_default()
+                    
+                    # 计算文字尺寸
+                    text_bbox = draw.textbbox((0, 0), text, font=font)
+                    text_width = text_bbox[2] - text_bbox[0]
+                    text_height = text_bbox[3] - text_bbox[1]
+                    
+                    # 计算文字位置
+                    padding = 20
+                    if position == "右下角":
+                        x = img.width - text_width - padding
+                        y = img.height - text_height - padding
+                    elif position == "左下角":
+                        x = padding
+                        y = img.height - text_height - padding
+                    elif position == "右上角":
+                        x = img.width - text_width - padding
+                        y = padding
+                    elif position == "左上角":
+                        x = padding
+                        y = padding
+                    elif position == "中心":
+                        x = (img.width - text_width) // 2
+                        y = (img.height - text_height) // 2
+                    
+                    # 将十六进制颜色转换为RGB
+                    r = int(color[1:3], 16)
+                    g = int(color[3:5], 16)
+                    b = int(color[5:7], 16)
+                    
+                    # 添加文字水印
+                    draw.text(
+                        (x, y), 
+                        text, 
+                        font=font, 
+                        fill=(r, g, b, alpha)
+                    )
+                    
+                    # 获取原始文件名（不含扩展名）
+                    base_name = os.path.basename(file_path)
+                    name_without_ext = os.path.splitext(base_name)[0]
+                    ext = os.path.splitext(base_name)[1]
+                    
+                    # 构建新文件名
+                    new_file_path = os.path.join(save_dir, f"{name_without_ext}_watermark{ext}")
+                    
+                    # 保存图片
+                    if ext.lower() in [".jpg", ".jpeg"]:
+                        # JPG不支持透明通道，转换为RGB
+                        img = img.convert("RGB")
+                        img.save(new_file_path, quality=95)
+                    else:
+                        img.save(new_file_path, quality=95)
+                    
+                    success_count += 1
+                except Exception as e:
+                    print(f"添加水印失败 {file_path}: {e}")
+                    fail_count += 1
+            
+            messagebox.showinfo(
+                "添加完成",
+                f"批量添加水印完成！\n成功: {success_count}\n失败: {fail_count}"
+            )
+        
+        tk.Button(
+            watermark_window, 
+            text="开始添加水印",
+            command=start_watermarking,
+            bg=COLORS["accent"],
+            fg="white",
+            bd=0,
+            padx=20,
+            pady=10
+        ).pack(pady=20)
+        
+        # 居中显示
+        watermark_window.transient(self)
+        watermark_window.grab_set()
+        self.wait_window(watermark_window)
 
 if __name__ == "__main__":
     # 高分屏适配
