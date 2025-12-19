@@ -123,8 +123,8 @@ class DraggableTextWatermark:
 
     def move_to(self, x, y):
         """绝对移动（用于拖动）"""
-        self.x = x
-        self.y = y
+        self.x = int(x)
+        self.y = int(y)
 
     def get_bbox(self):
         """获取水印文字的像素边界框"""
@@ -208,8 +208,8 @@ class DraggableSticker:
     
     def move_to(self, x, y):
         """绝对移动（用于拖动）"""
-        self.x = x
-        self.y = y
+        self.x = int(x)
+        self.y = int(y)
     
     def get_bbox(self):
         """获取贴纸的像素边界框"""
@@ -234,8 +234,8 @@ class DraggableSticker:
         x = max(0, min(x, img.width - self.width))
         y = max(0, min(y, img.height - self.height))
         
-        # 绘制贴纸
-        layer.paste(self.sticker, (x, y), self.sticker)
+        # 绘制贴纸 - 确保坐标为整数
+        layer.paste(self.sticker, (int(x), int(y)), self.sticker)
         
         return Image.alpha_composite(img, layer).convert("RGB")
 
