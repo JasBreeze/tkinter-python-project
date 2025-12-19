@@ -495,6 +495,46 @@ class ModernEditorView(tk.Tk):
         scrollbar.pack(side="right", fill="y")
         
         ttk.Label(self.panel_content, text="* 点击贴纸添加到图片，添加后可拖动调整位置", foreground="#888888").pack(pady=10)
+        
+        # 添加贴纸缩放控件
+        scale_frame = ttk.Frame(self.panel_content)
+        scale_frame.pack(fill=tk.X, pady=10)
+        ttk.Label(scale_frame, text="贴纸大小：").pack(side=tk.LEFT, padx=5)
+        self.sticker_scale_var = tk.DoubleVar(value=1.0)
+        self.sticker_scale_slider = ttk.Scale(
+            scale_frame,
+            from_=0.1,
+            to=3.0,
+            orient=tk.HORIZONTAL,
+            variable=self.sticker_scale_var,
+            command=lambda val: self.controller._update_sticker_style(float(val), self.controller.sticker_rotation)
+        )
+        self.sticker_scale_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        self.sticker_scale_entry = ttk.Entry(scale_frame, width=6, textvariable=self.sticker_scale_var, justify=tk.CENTER)
+        self.sticker_scale_entry.pack(side=tk.LEFT, padx=5)
+        
+        # 添加贴纸旋转控件
+        rotate_frame = ttk.Frame(self.panel_content)
+        rotate_frame.pack(fill=tk.X, pady=10)
+        ttk.Label(rotate_frame, text="旋转角度：").pack(side=tk.LEFT, padx=5)
+        self.sticker_rotation_var = tk.DoubleVar(value=0.0)
+        self.sticker_rotation_slider = ttk.Scale(
+            rotate_frame,
+            from_=0,
+            to=360,
+            orient=tk.HORIZONTAL,
+            variable=self.sticker_rotation_var,
+            command=lambda val: self.controller._update_sticker_style(self.controller.sticker_scale, float(val))
+        )
+        self.sticker_rotation_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        self.sticker_rotation_entry = ttk.Entry(rotate_frame, width=6, textvariable=self.sticker_rotation_var, justify=tk.CENTER)
+        self.sticker_rotation_entry.pack(side=tk.LEFT, padx=5)
+        ttk.Label(rotate_frame, text="°").pack(side=tk.LEFT, padx=2)
+        self.sticker_scale_entry.bind("<Return>", lambda e: self.controller._update_sticker_style(self.sticker_scale_var.get(), self.controller.sticker_rotation))
+        self.sticker_scale_entry.bind("<FocusOut>", lambda e: self.controller._update_sticker_style(self.sticker_scale_var.get(), self.controller.sticker_rotation))
+        self.sticker_rotation_entry.bind("<Return>", lambda e: self.controller._update_sticker_style(self.controller.sticker_scale, self.sticker_rotation_var.get()))
+        self.sticker_rotation_entry.bind("<FocusOut>", lambda e: self.controller._update_sticker_style(self.controller.sticker_scale, self.sticker_rotation_var.get()))
+        
         ttk.Button(self.panel_content, text="✔ 确认添加贴纸", command=self.controller._confirm_sticker).pack(fill=tk.X, pady=5)
         
         # 绑定画布事件，用于贴纸拖动和删除
