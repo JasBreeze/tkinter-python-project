@@ -8,3 +8,4 @@ COLORS = {
     "accent_hover": "#357abd",  # 强调色悬停
     "border": "#1a1a1a"  # 边框色
 }
+
