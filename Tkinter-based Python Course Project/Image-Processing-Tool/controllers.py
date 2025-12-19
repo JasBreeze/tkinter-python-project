@@ -68,10 +68,12 @@ class EditorController:
         self.sticker_tk = None  # 当前贴纸的ImageTk对象
         self.sticker_pos = (0, 0)  # 贴纸在图片上的位置
         self.is_dragging_sticker = False  # 是否正在拖动贴纸
+        self.is_rotating_sticker = False  # 是否正在旋转贴纸
         self.sticker_drag_offset_x = 0  # 贴纸拖动偏移量X
         self.sticker_drag_offset_y = 0  # 贴纸拖动偏移量Y
         self.is_sticker_applied = False  # 贴纸是否已应用到图片
         self.show_sticker_delete_button = False  # 是否显示贴纸删除按钮
+        self.show_rotation_handle = False  # 是否显示旋转手柄
         self.sticker_scale = 1.0  # 贴纸缩放比例
         self.sticker_rotation = 0  # 贴纸旋转角度
         
@@ -1246,6 +1248,15 @@ class EditorController:
                 self.sticker_pos = (self.editing_image.width // 2, self.editing_image.height // 2)
                 self.sticker_scale = 1.0
                 self.sticker_rotation = 0
+                
+                # 重置视图中的滑块值
+                if hasattr(self.view, 'sticker_scale_var'):
+                    self.view.sticker_scale_var.set(1.0)
+                    self.view.sticker_scale_slider.configure(value=1.0)
+                if hasattr(self.view, 'sticker_rotation_var'):
+                    self.view.sticker_rotation_var.set(0.0)
+                    self.view.sticker_rotation_slider.configure(value=0.0)
+                
                 # 更新预览
                 self._update_sticker_preview()
         except Exception as e:
@@ -1267,7 +1278,7 @@ class EditorController:
         self._update_canvas()
 
     def _on_sticker_press(self, event):
-        """贴纸拖动开始"""
+        """贴纸拖动或旋转开始"""
         if not self.sticker_obj or not self.editing_image:
             return
         
@@ -1275,6 +1286,16 @@ class EditorController:
         px, py = self._screen_to_image(event.x, event.y)
         if px is None:
             return
+        
+        # 检查是否点击了旋转手柄
+        rotation_handle_bbox = self._get_rotation_handle_bbox()
+        if rotation_handle_bbox:
+            rh_x1, rh_y1, rh_x2, rh_y2 = rotation_handle_bbox
+            if rh_x1 <= px <= rh_x2 and rh_y1 <= py <= rh_y2:
+                # 进入旋转模式
+                self.is_rotating_sticker = True
+                self.view.canvas.config(cursor="fleur")
+                return
         
         # 获取贴纸的边界框
         bbox = self.sticker_obj.get_bbox()
@@ -1296,40 +1317,84 @@ class EditorController:
             self.view.canvas.config(cursor="fleur")
 
     def _on_sticker_drag(self, event):
-        """贴纸拖动中"""
-        if not self.is_dragging_sticker or not self.sticker_obj:
+        """贴纸拖动或旋转中"""
+        if not self.sticker_obj:
             return
         
-        # 计算新的贴纸屏幕位置
-        new_sx = event.x - self.sticker_drag_offset_x
-        new_sy = event.y - self.sticker_drag_offset_y
-        
-        # 转换为图像坐标
-        new_px, new_py = self._screen_to_image(new_sx, new_sy)
-        if new_px is None:
-            return
-        
-        # 更新贴纸位置
-        self.sticker_obj.move_to(new_px, new_py)
-        
-        # 更新删除按钮位置
-        if self.show_sticker_delete_button:
-            self._hide_delete_button()
-            self._show_sticker_delete_button()
-        
-        # 更新预览
-        self._update_sticker_preview()
+        if self.is_dragging_sticker:
+            # 拖动逻辑
+            # 计算新的贴纸屏幕位置
+            new_sx = event.x - self.sticker_drag_offset_x
+            new_sy = event.y - self.sticker_drag_offset_y
+            
+            # 转换为图像坐标
+            new_px, new_py = self._screen_to_image(new_sx, new_sy)
+            if new_px is None:
+                return
+            
+            # 更新贴纸位置
+            self.sticker_obj.move_to(new_px, new_py)
+            
+            # 更新删除按钮和旋转手柄位置
+            if self.show_sticker_delete_button:
+                self._hide_delete_button()
+                self._show_sticker_delete_button()
+            if self.show_rotation_handle:
+                self._hide_rotation_handle()
+                self._show_rotation_handle()
+            
+            # 更新预览
+            self._update_sticker_preview()
+        elif self.is_rotating_sticker:
+            # 旋转逻辑
+            # 获取贴纸中心坐标（图像坐标）
+            bbox = self.sticker_obj.get_bbox()
+            center_x = (bbox[0] + bbox[2]) // 2
+            center_y = (bbox[1] + bbox[3]) // 2
+            
+            # 获取鼠标当前位置（图像坐标）
+            mouse_px, mouse_py = self._screen_to_image(event.x, event.y)
+            if mouse_px is None:
+                return
+            
+            # 计算旋转角度（弧度）- 反转方向，使旋转与鼠标移动一致
+            import math
+            dx = mouse_px - center_x
+            dy = mouse_py - center_y
+            angle = -math.atan2(dy, dx) * 180 / math.pi
+            
+            # 实现旋转吸附功能，每15度吸附一次
+            snap_angle = 15
+            if snap_angle > 0:
+                angle = round(angle / snap_angle) * snap_angle
+            
+            # 确保角度在0-360度范围内
+            angle = angle % 360
+            
+            # 更新贴纸旋转角度
+            self.sticker_rotation = angle
+            self._update_sticker_style(self.sticker_scale, self.sticker_rotation)
+            
+            # 更新旋转手柄位置
+            if self.show_rotation_handle:
+                self._hide_rotation_handle()
+                self._show_rotation_handle()
 
     def _on_sticker_release(self, event):
-        """贴纸拖动结束"""
+        """贴纸拖动或旋转结束"""
         if self.is_dragging_sticker:
             self.is_dragging_sticker = False
             self.view.canvas.config(cursor="")
             # 更新预览
             self._update_sticker_preview()
+        elif self.is_rotating_sticker:
+            self.is_rotating_sticker = False
+            self.view.canvas.config(cursor="")
+            # 更新预览
+            self._update_sticker_preview()
 
     def _on_sticker_right_click(self, event):
-        """右键点击贴纸：显示删除按钮 ❌"""
+        """右键点击贴纸：显示删除按钮和旋转手柄"""
         if not self.sticker_obj:
             return
 
@@ -1348,8 +1413,9 @@ class EditorController:
 
         # 判断点击是否落在贴纸内
         if x1 <= px <= x2 and y1 <= py <= y2:
-            # 显示删除按钮
+            # 显示删除按钮和旋转手柄
             self._show_sticker_delete_button()
+            self._show_rotation_handle()
             self.show_sticker_delete_button = True
 
     def _confirm_sticker(self):
@@ -1375,6 +1441,11 @@ class EditorController:
         self.sticker_scale = 1.0
         self.sticker_rotation = 0
         
+        # 重置视图中的滑块值
+        if hasattr(self.view, 'sticker_scale_var'):
+            self.view.sticker_scale_var.set(1.0)
+            self.view.sticker_scale_slider.configure(value=1.0)
+        
         # 确保当前工具仍然是sticker，但此时没有活跃的贴纸对象
         self.view.show_panel("sticker")
         
@@ -1385,6 +1456,9 @@ class EditorController:
         self.crop_controller = CropController(self.editing_image.copy())
         
         self._hide_delete_button()
+        self._hide_rotation_handle()
+        self.show_sticker_delete_button = False
+        self.show_rotation_handle = False
         self._update_canvas()
         messagebox.showinfo("提示", "贴纸已添加")
 
@@ -1398,6 +1472,9 @@ class EditorController:
             self.sticker_rotation = 0
             self.preview_image = self.editing_image.copy()
             self._hide_delete_button()
+            self._hide_rotation_handle()
+            self.show_sticker_delete_button = False
+            self.show_rotation_handle = False
             self._update_canvas()
     
     def _push_history(self):
@@ -1612,14 +1689,30 @@ class EditorController:
         if not self.sticker_obj:
             return
         
+        # 更新控制器中的变量
+        self.sticker_scale = float(scale)
+        self.sticker_rotation = float(rotation)
+        
+        # 更新视图中的控件值
+        if hasattr(self.view, 'sticker_scale_var'):
+            self.view.sticker_scale_var.set(self.sticker_scale)
+            self.view.sticker_scale_slider.configure(value=self.sticker_scale)
+        if hasattr(self.view, 'sticker_rotation_var'):
+            self.view.sticker_rotation_var.set(self.sticker_rotation)
+            self.view.sticker_rotation_slider.configure(value=self.sticker_rotation)
+        
         # 更新贴纸样式
-        self.sticker_obj.set_style(scale, rotation)
+        self.sticker_obj.set_style(self.sticker_scale, self.sticker_rotation)
         # 更新预览
         self._update_sticker_preview()
         # 更新删除按钮位置
         if self.show_sticker_delete_button:
             self._hide_delete_button()
             self._show_sticker_delete_button()
+        # 更新旋转手柄位置
+        if self.show_rotation_handle:
+            self._hide_rotation_handle()
+            self._show_rotation_handle()
 
     def _show_delete_button(self):
         """在水印左上角绘制删除按钮"""
@@ -1656,36 +1749,123 @@ class EditorController:
     
     def _show_sticker_delete_button(self):
         """在贴纸左上角绘制删除按钮"""
-        self._hide_delete_button()
+        # 删除按钮现在与旋转手柄一起绘制，所以这里只需要调用_show_rotation_handle
+        self._show_rotation_handle()
+    
+    def _show_rotation_handle(self):
+        """在贴纸周围绘制白色边框、删除标志和旋转标志"""
+        self._hide_rotation_handle()
         
         if not self.sticker_obj:
             return
         
-        # 获取贴纸的边界框
-        bbox = self.sticker_obj.get_bbox()
-        # 计算贴纸的实际宽度和高度
-        w = bbox[2] - bbox[0]
-        h = bbox[3] - bbox[1]
+        # 获取贴纸的边界框（已经考虑了旋转）
+        sticker_bbox = self.sticker_obj.get_bbox()
         
-        # 计算贴纸左上角映射到画布位置
-        sx, sy = self._image_to_screen(bbox[0], bbox[1])
+        # 获取旋转前的边界框（用于绘制白框）
+        original_bbox = self.sticker_obj.get_original_bbox()
+        # 计算旋转前的边界
+        original_x1 = original_bbox[0]
+        original_y1 = original_bbox[1]
+        original_x2 = original_bbox[2]
+        original_y2 = original_bbox[3]
         
-        btn_size = 22
+        # 转换为画布坐标
+        original_sx1, original_sy1 = self._image_to_screen(original_x1, original_y1)
+        original_sx2, original_sy2 = self._image_to_screen(original_x2, original_y2)
         
-        # 画圆 - 左上角位置
+        # 计算贴纸中心
+        center_x = self.sticker_obj.x
+        center_y = self.sticker_obj.y
+        center_sx, center_sy = self._image_to_screen(center_x, center_y)
+        
+        # 绘制白色方框（基于旋转前的边界框，只随缩放变化）
+        border_width = 2
+        self.view.canvas.create_rectangle(
+            original_sx1 - border_width, original_sy1 - border_width, 
+            original_sx2 + border_width, original_sy2 + border_width,
+            outline="white", width=border_width, tags="rotation_handle"
+        )
+        
+        # 绘制删除标志（×）- 固定在白框左上角
+        delete_btn_size = 22
+        delete_sx = original_sx1
+        delete_sy = original_sy1
         self.view.canvas.create_oval(
-            sx, sy - btn_size,
-            sx + btn_size, sy,
-            fill="#ff4444", outline="white", width=2, tags="del_btn"
+            delete_sx - delete_btn_size//2, delete_sy - delete_btn_size//2, 
+            delete_sx + delete_btn_size//2, delete_sy + delete_btn_size//2,
+            fill="#ff4444", outline="white", width=2, tags="rotation_handle"
         )
-        
-        # 写 ×
         self.view.canvas.create_text(
-            sx + btn_size // 2, sy - btn_size // 2,
-            text="×", fill="white", font=("Arial", 15, "bold"), tags="del_btn"
+            delete_sx, delete_sy, 
+            text="×", fill="white", font=("Arial", 15, "bold"), tags="rotation_handle"
+        )
+        # 绑定删除按钮的点击事件
+        self.view.canvas.tag_bind("rotation_handle", "<Button-1>", self._check_delete_click)
+        
+        # 绘制旋转手柄（🔄图标）- 固定在白框右下角
+        handle_icon_size = 25
+        handle_sx = original_sx2
+        handle_sy = original_sy2
+        self.view.canvas.create_oval(
+            handle_sx - handle_icon_size//2, handle_sy - handle_icon_size//2, 
+            handle_sx + handle_icon_size//2, handle_sy + handle_icon_size//2,
+            fill="white", outline="white", width=2, tags="rotation_handle"
+        )
+        self.view.canvas.create_text(
+            handle_sx, handle_sy, 
+            text="🔄", 
+            font=("Arial", 14), 
+            tags="rotation_handle"
         )
         
-        self.view.canvas.tag_bind("del_btn", "<Button-1>", self._delete_sticker)
+        # 记录旋转手柄的位置（用于点击检测）
+        self.rotation_handle_pos = (original_x2, original_y2)
+        self.show_rotation_handle = True
+        # 记录白框边界的画布坐标（用于检测删除按钮点击）
+        self.sticker_canvas_bbox = (original_sx1, original_sy1, original_sx2, original_sy2)
+    
+    def _hide_rotation_handle(self):
+        """隐藏旋转手柄"""
+        self.view.canvas.delete("rotation_handle")
+        self.show_rotation_handle = False
+    
+    def _check_delete_click(self, event):
+        """检查点击是否发生在删除按钮上"""
+        if not hasattr(self, 'sticker_canvas_bbox'):
+            return
+        
+        # 获取点击位置的画布坐标
+        click_sx = event.x
+        click_sy = event.y
+        
+        # 获取删除按钮的位置和大小
+        delete_btn_size = 22
+        sx1, sy1, sx2, sy2 = self.sticker_canvas_bbox
+        
+        # 检查是否点击了删除按钮（左上角）
+        delete_sx1 = sx1 - delete_btn_size//2
+        delete_sy1 = sy1 - delete_btn_size//2
+        delete_sx2 = sx1 + delete_btn_size//2
+        delete_sy2 = sy1 + delete_btn_size//2
+        
+        if delete_sx1 <= click_sx <= delete_sx2 and delete_sy1 <= click_sy <= delete_sy2:
+            # 点击了删除按钮
+            self._delete_sticker()
+        # 否则，继续处理旋转手柄的点击（已经在_on_sticker_press中处理）
+    
+    def _get_rotation_handle_bbox(self):
+        """获取旋转手柄的边界框"""
+        if not self.show_rotation_handle or not hasattr(self, 'rotation_handle_pos'):
+            return None
+        
+        handle_x, handle_y = self.rotation_handle_pos
+        # 旋转手柄的实际点击区域（🔄图标）
+        handle_icon_size = 25
+        return (
+            handle_x - handle_icon_size, handle_y - handle_icon_size, 
+            handle_x + handle_icon_size, handle_y + handle_icon_size
+        )
     
     def _delete_watermark(self, event=None):
         """删除水印"""
