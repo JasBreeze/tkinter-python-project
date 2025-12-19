@@ -251,26 +251,52 @@ class EditorController:
                 self.editing_image = self.preview_image.copy()
                 self._reset_adjust_params()
 
-        if self.current_tool == "crop":
+        elif self.current_tool == "filter":
+            # 切换工具时，应用当前滤镜效果
+            if self.preview_image != self.editing_image:
+                self._push_history()
+                self.editing_image = self.preview_image.copy()
+
+        elif self.current_tool == "crop":
             # 裁剪需要显式确认，切换工具时自动取消裁剪框
-            pass
+            self.is_cropping = False
+            self.crop_start = None
+            self.crop_end = None
+            self.view.canvas.delete("overlay")
+            self.view.canvas.config(cursor="")
         
         # 切换工具时隐藏删除按钮
         if self.show_delete_button or self.show_sticker_delete_button:
             self._hide_delete_button()
-            
-        # 切换工具时重置贴纸和水印状态
-        if self.current_tool != "sticker" and self.sticker_image:
-            # 切换工具时，如果有未确认的贴纸，重置状态
+        
+        # 切换工具时重置贴纸状态
+        if self.sticker_image:
+            # 如果有未确认的贴纸，重置状态
             self.sticker_image = None
             self.selected_sticker = None
+            self.sticker_obj = None
             self.preview_image = self.editing_image.copy()
             self._update_canvas()
-        elif self.current_tool != "text" and self.text_watermark:
-            # 切换工具时，如果有未确认的水印，重置状态
+        
+        # 切换工具时重置水印状态
+        if self.text_watermark:
+            # 如果有未确认的水印，重置状态
             self.text_watermark = None
             self.preview_image = self.editing_image.copy()
             self._update_canvas()
+        
+        # 切换工具时重置涂鸦和马赛克状态
+        if self.current_tool in ["doodle", "mosaic"]:
+            # 确保涂鸦和马赛克的未确认更改被丢弃
+            self.doodle_editor = DoodleEditor(self.editing_image.copy())
+            self.mosaic_editor = MosaicEditor(self.editing_image.copy())
+            self.preview_image = self.editing_image.copy()
+            self._update_canvas()
+        
+        # 重置所有拖动状态
+        self.is_dragging_text = False
+        self.is_dragging_sticker = False
+        self.show_magnifier = False
     
     def _reset_adjust_params(self):
         """重置调节参数"""
@@ -1250,32 +1276,46 @@ class EditorController:
         if px is None:
             return
         
-        # 检查是否点击在贴纸上
+        # 获取贴纸的边界框
         bbox = self.sticker_obj.get_bbox()
+        # 计算贴纸的实际边界
+        x1 = bbox[0]
+        y1 = bbox[1]
+        x2 = bbox[2]
+        y2 = bbox[3]
         
-        if not (bbox[0] <= px <= bbox[2] and bbox[1] <= py <= bbox[3]):
-            return
-        
-        self.is_dragging_sticker = True
-        self.view.canvas.config(cursor="fleur")
-        
-        # 记录鼠标与贴纸位置的偏移（为了防止跳动）
-        self.sticker_drag_offset_x = px - self.sticker_obj.x
-        self.sticker_drag_offset_y = py - self.sticker_obj.y
+        # 判断点击是否落在贴纸内
+        if x1 <= px <= x2 and y1 <= py <= y2:
+            # 进入拖动模式
+            self.is_dragging_sticker = True
+            # 计算偏移量：屏幕坐标 - 贴纸在屏幕上的坐标
+            # 先将贴纸的图像坐标转换为屏幕坐标
+            sx, sy = self._image_to_screen(self.sticker_obj.x, self.sticker_obj.y)
+            self.sticker_drag_offset_x = event.x - sx
+            self.sticker_drag_offset_y = event.y - sy
+            self.view.canvas.config(cursor="fleur")
 
     def _on_sticker_drag(self, event):
         """贴纸拖动中"""
-        if not self.is_dragging_sticker:
+        if not self.is_dragging_sticker or not self.sticker_obj:
             return
         
-        # 转换屏幕坐标到图片坐标
-        px, py = self._screen_to_image(event.x, event.y)
-        if px is None:
+        # 计算新的贴纸屏幕位置
+        new_sx = event.x - self.sticker_drag_offset_x
+        new_sy = event.y - self.sticker_drag_offset_y
+        
+        # 转换为图像坐标
+        new_px, new_py = self._screen_to_image(new_sx, new_sy)
+        if new_px is None:
             return
         
-        # 实时移动贴纸
-        if self.sticker_obj:
-            self.sticker_obj.move_to(px - self.sticker_drag_offset_x, py - self.sticker_drag_offset_y)
+        # 更新贴纸位置
+        self.sticker_obj.move_to(new_px, new_py)
+        
+        # 更新删除按钮位置
+        if self.show_sticker_delete_button:
+            self._hide_delete_button()
+            self._show_sticker_delete_button()
         
         # 更新预览
         self._update_sticker_preview()
@@ -1298,16 +1338,19 @@ class EditorController:
         if px is None:
             return
 
-        # 计算贴纸的实际边界
+        # 获取贴纸的边界框
         bbox = self.sticker_obj.get_bbox()
+        # 计算贴纸的实际边界
+        x1 = bbox[0]
+        y1 = bbox[1]
+        x2 = bbox[2]
+        y2 = bbox[3]
 
         # 判断点击是否落在贴纸内
-        if not (bbox[0] <= px <= bbox[2] and bbox[1] <= py <= bbox[3]):
-            return
-
-        # 显示删除按钮
-        self._show_sticker_delete_button()
-        self.show_sticker_delete_button = True
+        if x1 <= px <= x2 and y1 <= py <= y2:
+            # 显示删除按钮
+            self._show_sticker_delete_button()
+            self.show_sticker_delete_button = True
 
     def _confirm_sticker(self):
         """确认添加贴纸"""
@@ -1344,12 +1387,6 @@ class EditorController:
         self._hide_delete_button()
         self._update_canvas()
         messagebox.showinfo("提示", "贴纸已添加")
-        
-        # 解绑拖动事件，避免在没有贴纸时触发
-        self.view.canvas.unbind("<ButtonPress-1>")
-        self.view.canvas.unbind("<B1-Motion>")
-        self.view.canvas.unbind("<ButtonRelease-1>")
-        self.view.canvas.unbind("<ButtonPress-3>")
 
     def _delete_sticker(self, event=None):
         """删除当前贴纸"""
@@ -1374,36 +1411,102 @@ class EditorController:
     def undo(self):
         """撤销操作"""
         if self.history:
+            # 先应用当前工具的未确认更改
+            self._apply_pending_changes()
+            
             # 将当前状态保存到重做栈
             self.redo_history.append(self.editing_image.copy())
             # 从撤销栈获取上一个状态
             self.editing_image = self.history.pop()
             self.preview_image = self.editing_image.copy()
             self._reset_adjust_params()
+            
+            # 重置所有工具状态
+            self.current_tool = None
+            self.is_cropping = False
+            self.crop_start = None
+            self.crop_end = None
+            self.sticker_image = None
+            self.selected_sticker = None
+            self.sticker_obj = None
+            self.text_watermark = None
+            self.show_delete_button = False
+            self.show_sticker_delete_button = False
+            self.is_dragging_text = False
+            self.is_dragging_sticker = False
+            self.show_magnifier = False
+            
             # 重新初始化所有功能实例，确保它们基于撤销后的图像
             from models import DoodleEditor, DraggableTextWatermark, CropController, MosaicEditor
             self.doodle_editor = DoodleEditor(self.editing_image.copy())
             self.mosaic_editor = MosaicEditor(self.editing_image.copy())
             self.text_watermark = DraggableTextWatermark(self.editing_image.copy())
             self.crop_controller = CropController(self.editing_image.copy())
+            
+            # 清空画布上的所有覆盖元素
+            self.view.canvas.delete("overlay")
+            self.view.canvas.delete("del_btn")
+            self.view.canvas.delete("magnifier")
+            
+            # 重置光标
+            self.view.canvas.config(cursor="")
+            
+            # 更新画布
             self._update_canvas()
+            
+            # 更新视图面板，确保显示正确的工具面板
+            if hasattr(self.view, 'show_panel'):
+                self.view.show_panel("adjust")
     
     def redo(self):
         """重做操作"""
         if self.redo_history:
+            # 先应用当前工具的未确认更改
+            self._apply_pending_changes()
+            
             # 将当前状态保存到撤销栈
             self.history.append(self.editing_image.copy())
             # 从重做栈获取下一个状态
             self.editing_image = self.redo_history.pop()
             self.preview_image = self.editing_image.copy()
             self._reset_adjust_params()
+            
+            # 重置所有工具状态
+            self.current_tool = None
+            self.is_cropping = False
+            self.crop_start = None
+            self.crop_end = None
+            self.sticker_image = None
+            self.selected_sticker = None
+            self.sticker_obj = None
+            self.text_watermark = None
+            self.show_delete_button = False
+            self.show_sticker_delete_button = False
+            self.is_dragging_text = False
+            self.is_dragging_sticker = False
+            self.show_magnifier = False
+            
             # 重新初始化所有功能实例，确保它们基于重做后的图像
             from models import DoodleEditor, DraggableTextWatermark, CropController, MosaicEditor
             self.doodle_editor = DoodleEditor(self.editing_image.copy())
             self.mosaic_editor = MosaicEditor(self.editing_image.copy())
             self.text_watermark = DraggableTextWatermark(self.editing_image.copy())
             self.crop_controller = CropController(self.editing_image.copy())
+            
+            # 清空画布上的所有覆盖元素
+            self.view.canvas.delete("overlay")
+            self.view.canvas.delete("del_btn")
+            self.view.canvas.delete("magnifier")
+            
+            # 重置光标
+            self.view.canvas.config(cursor="")
+            
+            # 更新画布
             self._update_canvas()
+            
+            # 更新视图面板，确保显示正确的工具面板
+            if hasattr(self.view, 'show_panel'):
+                self.view.show_panel("adjust")
     
     def auto_enhance(self):
         """自动增强图片"""
@@ -1558,13 +1661,18 @@ class EditorController:
         if not self.sticker_obj:
             return
         
-        # 计算贴纸左上角映射到画布位置
+        # 获取贴纸的边界框
         bbox = self.sticker_obj.get_bbox()
+        # 计算贴纸的实际宽度和高度
+        w = bbox[2] - bbox[0]
+        h = bbox[3] - bbox[1]
+        
+        # 计算贴纸左上角映射到画布位置
         sx, sy = self._image_to_screen(bbox[0], bbox[1])
         
         btn_size = 22
         
-        # 画圆
+        # 画圆 - 左上角位置
         self.view.canvas.create_oval(
             sx, sy - btn_size,
             sx + btn_size, sy,
